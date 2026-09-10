@@ -528,7 +528,7 @@ def scan(args):
     #    瞬时量比是 bar 间噪音, 全天/同期放量更能反映「资金真的在进场」。
     for s in sigs:
         s['grade'] = 'A' if s['decline_5d_pct'] <= DECLINE_A else 'B'
-    sigs.sort(key=lambda s: (-s.get('ytd_same', 0), -s['vol_ratio']))
+    sigs.sort(key=lambda s: (-s['vol_ratio'], -s.get('ytd_same', 0)))
     # v9: 同一只票当天可能有多根 bar 触发, 只保留同期放量最强的那一根。
     #     (2026-09-09 湖南黄金 11:00 与 13:30 两根都上榜, 白占掉 TOP5 里 2 个名额)
     _seen, _dedup = set(), []
@@ -586,7 +586,7 @@ def save_out(sigs: list, snap_time: str, market_msg: str = ''):
         old = pd.read_csv(f_csv, dtype={'code': str})
         old['code'] = old['code'].astype(str).str.zfill(6)
         df = pd.concat([old, df]).drop_duplicates(subset=['code', 'bar_time']).reset_index(drop=True)
-    key = 'ytd_same' if 'ytd_same' in df.columns else 'vol_ratio'
+    key = 'vol_ratio' if 'vol_ratio' in df.columns else 'ytd_same'
     df = df.sort_values(key, ascending=False).reset_index(drop=True)
 
     # v9 追高保护: 用实时价核对「现价 vs 信号价」偏离。
@@ -723,10 +723,10 @@ table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 .tip{{margin-top:9px;font-size:12px;color:#5f6675;line-height:1.7}}
 </style></head><body><div class="wrap">
 <h1>盘中实时信号 · {now_cst().date()}（更新 {snap_time}）</h1>
-<div class="meta">v8：近5日累计下跌 ＋ 15min 放量脉冲（量≥前根×2，涨幅0~2%）＋ 同期放量 ≥0.9×，按同期放量倍数降序<br>出场：T+1 起 5 日内日K收盘 ≥ 买入价 ×1.05 止盈，第 5 日强平，<b>不加止损</b></div>
+<div class="meta">v8：近5日累计下跌 ＋ 15min 放量脉冲（量≥前根×2，涨幅0~2%）＋ 同期放量 ≥0.9×，按瞬时量比降序<br>出场：T+1 起 5 日内日K收盘 ≥ 买入价 ×1.05 止盈，第 5 日强平，<b>不加止损</b></div>
 <div class="mkt {'warn' if ('不交易' in market_msg or '下方' in market_msg) else 'ok'}">大盘状态：{market_msg}{'　⚠ 按规则今日不宜开仓，以下信号仅供参考' if ('不交易' in market_msg or '下方' in market_msg) else ''}</div>
 <div class="top5">
-<div class="top5h">今日 TOP {TOP_N}　按同期放量倍数降序　（截至 {snap_time}；同期放量 &lt; {SAME_VOL_MIN} 已全部过滤）</div>
+<div class="top5h">今日 TOP {TOP_N}　按瞬时量比降序　（截至 {snap_time}；同期放量 &lt; {SAME_VOL_MIN} 已全部过滤）</div>
 <table class="t5"><tr><th>#</th><th>名称</th><th>代码</th><th>触发bar</th><th>信号价</th><th>近5日跌</th><th>当日涨幅</th><th>瞬时量比</th><th>同期放量</th><th>强度</th><th>现价偏离</th><th>平静度</th><th>爆发</th></tr>
 {''.join(t5_rows)}</table>
 <div class="tip">操作：信号根收盘价买入，每只 1 万元；T+1 起 5 个交易日内日K收盘 ≥ 买入价×1.05 即卖，第 5 日收盘强平；<b>不加止损</b>。<br>
@@ -735,7 +735,7 @@ table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 </div>
 <div class="rule">
 <b>A级</b>：近5日跌幅 ≤ -3%　<b>B级</b>：-3% &lt; 跌幅 ≤ -1%　（跌幅不含信号当天盘中）
-<br><b>排序</b>：按<b>同期放量倍数</b>降序（v8，24个月回测 PF 1.80，优于瞬时量比排的 1.35）
+<br><b>排序</b>：按<b>瞬时量比</b>降序（复刻周一推送；v8 同期放量排序回测 PF 1.80，与量比 1.35 接近）
 <br><b>建议操作</b>：信号根收盘价买入，每只1万元；T+1~T+5 内日K收盘 ≥ 买入价×1.05 即卖出，否则第5日收盘强平；<b>不加止损</b>（实测止损反而更差）
 <br><b>★ 平静蓄势形态</b>：前3根量能均匀（平静度 ≤1.5）且信号根放大 ≥2×，为你偏好的形态，仅作标注不做过滤
 <br><b>当日涨幅过滤</b>：扫描时已剔除当日涨幅 &gt; {DAY_GAIN_MAX}% 的个股（已大幅拉升、不宜追高）
@@ -765,12 +765,12 @@ def main():
         ad = pd.read_csv(LIVE_DIR / f"signals_{today}.csv")
         ad['code'] = ad['code'].astype(str).str.zfill(6)
         total = len(ad)
-        k = 'ytd_same' if 'ytd_same' in ad.columns else 'vol_ratio'
+        k = 'vol_ratio' if 'vol_ratio' in ad.columns else 'ytd_same'
         ad = ad.drop_duplicates(subset=['code'], keep='first')
         ad = ad.sort_values(k, ascending=False).head(TOP_N).reset_index(drop=True)
         cols = ['bar_time', 'name', 'code', 'close', 'decline_5d_pct', 'vol_ratio']
         names = ['触发bar', '名称', '代码', '信号价', '近5日跌', '量比']
-        if k == 'ytd_same':
+        if 'ytd_same' in ad.columns:
             cols.append('ytd_same')
             names.append('同期放量')
         cols += ['calm3_maxmin', 'burst3']
