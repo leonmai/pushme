@@ -1,0 +1,10 @@
+# 回测缓存 (285MB+, 云端不跑回测, 不应入库)
+.cache_v2/
+# 回测结果 (本地分析用, 非每日产出)
+results_mv/
+# Python 缓存
+__pycache__/
+*.pyc
+# 编辑器
+.vscode/
+.idea/

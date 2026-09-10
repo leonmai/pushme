@@ -1,0 +1,9 @@
+# 云端实盘 / 持仓跟踪 必需 (GitHub Actions 只装这些, 装得快、不踩 baostock 坑)
+pandas>=1.5
+numpy>=1.23
+requests>=2.28
+
+# ---- 以下均为可选, 缺失自动降级, 不影响主流程 ----
+# baostock  仅回测(monthly_validate)需要, 云端不跑回测可省; 本地若跑回测请取消注释
+# akshare   个别接口的备用回退路径, 主路径已改用纯 requests 腾讯/新浪, 不装也能跑
+# tqdm      仅进度条, 缺失时退化为普通迭代

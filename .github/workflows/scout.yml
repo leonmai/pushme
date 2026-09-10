@@ -1,0 +1,51 @@
+name: A股盘中盯盘 (北京时间 13:30)
+
+# 触发: 每周一至周五 北京时间 13:30 (= UTC 05:30)
+# 也支持在 Actions 页面手动 Run workflow 测试
+on:
+  schedule:
+    - cron: '30 5 * * 1-5'
+  workflow_dispatch: {}
+
+# 允许把 results_live/ 提交回仓库, 以持久化 state.json / positions.json
+permissions:
+  contents: write
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖 (云端仅必需项, 装得快)
+        run: pip install -r requirements.txt
+
+      - name: 盘中扫描 + 推送微信
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python live_scout.py
+
+      - name: 自动建立模拟持仓 (若当日有信号)
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          python track_positions.py --init "$TODAY" --max-positions 3 || true
+
+      - name: 提交结果回仓库 (持久化 state / positions)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results_live/ || true
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "auto: scout $(TZ=Asia/Shanghai date +%Y-%m-%d)"
+            git push
+          fi
