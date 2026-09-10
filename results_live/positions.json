@@ -139,6 +139,48 @@
       "decline_5d": -2.87,
       "hold_day": 0,
       "shares": 400
+    },
+    {
+      "code": "300846",
+      "name": "首都在线",
+      "buy_date": "2026-09-10",
+      "buy_price": 19.9,
+      "buy_bar": "14:00",
+      "vol_ratio": 2.4,
+      "calm": 3.22,
+      "burst": 4.41,
+      "grade": "B",
+      "decline_5d": -2.12,
+      "hold_day": 0,
+      "shares": 500
+    },
+    {
+      "code": "600233",
+      "name": "圆通速递",
+      "buy_date": "2026-09-10",
+      "buy_price": 17.36,
+      "buy_bar": "13:45",
+      "vol_ratio": 3.0,
+      "calm": 2.93,
+      "burst": 2.47,
+      "grade": "B",
+      "decline_5d": -1.23,
+      "hold_day": 0,
+      "shares": 500
+    },
+    {
+      "code": "688662",
+      "name": "富信科技",
+      "buy_date": "2026-09-10",
+      "buy_price": 86.25,
+      "buy_bar": "14:15",
+      "vol_ratio": 2.25,
+      "calm": 3.03,
+      "burst": 3.74,
+      "grade": "B",
+      "decline_5d": -1.87,
+      "hold_day": 0,
+      "shares": 100
     }
   ],
   "closed": []
