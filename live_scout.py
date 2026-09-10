@@ -793,10 +793,8 @@ def main():
         except Exception as e:
             log(f"推送异常(不影响选股): {e}")
     else:
-        log("本轮无新增信号。")
-        # 仍推送一条提示, 让用户知道今日任务确实跑过 (避免以为漏跑)
-        PN.push_text(f"盘中盯盘 {now_cst().date()} 无信号",
-                     f"{now_cst().strftime('%H:%M')} 扫描完成, 本轮无新增信号。")
+        # 每半小时扫描模式下, 无信号不再推送微信, 避免刷屏; 仅留本地日志
+        log("本轮无新增信号（静默，不推送）。")
     log(f"耗时 {time.time()-t0:.0f}s")
 
 
