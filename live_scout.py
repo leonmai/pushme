@@ -88,6 +88,7 @@ SAME_VOL_MIN = 1.5          # 同期放量硬门槛 (低于此不出信号)
 SAME_VOL_MID = 1.8          # ★★ 中等
 SAME_VOL_STRONG = 2.3       # ★★★ 强信号 (对应回测全天 1.47, PF ~1.85)
 CHASE_LIMIT_PCT = 3.0       # 追高上限: 现价较信号价涨超 3% 提示慎追
+DAY_GAIN_MAX = 3.0        # 当日涨幅过滤: 扫描时剔除当日涨幅 > 此值的个股 (已大幅拉升, 不宜追高)
 
 # A股 15min bar 的 close-time 标记 (与 screener_v2 一致, 已排除的三根不列入)
 BAR_TIMES = [(9, 45), (10, 0), (10, 15), (10, 30), (10, 45), (11, 0), (11, 15),
@@ -430,9 +431,11 @@ def scan(args):
     snap = snap[~snap['code'].str.startswith(S.POOL_EXCLUDE_PREFIX)]
     snap = snap[~snap['name'].str.contains('ST|退', na=False)]
     snap = snap[(snap['turnover'] >= MIN_TURNOVER) & (snap['price'] >= 1.0) &
-                (snap['pct'] >= -6) & (snap['pct'] <= 6)]
+                (snap['pct'] >= -6)]
+    n_over_gain = int((snap['pct'] > DAY_GAIN_MAX).sum())
+    snap = snap[snap['pct'] <= DAY_GAIN_MAX]
     snap = snap.sort_values('turnover', ascending=False).head(args.pool).reset_index(drop=True)
-    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/极端涨跌)")
+    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/极端涨跌/当日涨幅>{DAY_GAIN_MAX}% 的 {n_over_gain} 只)")
 
     # 3) 近5日跌幅 (每天算一次, 结果入 state)
     day_key = today.strftime('%Y-%m-%d')
@@ -472,6 +475,7 @@ def scan(args):
     log(f"符合大前提(近5日跌>{abs(DECLINE_B)}%): {len(cands)} 只 → 扫描 15min")
 
     name_map = {r['code']: r['name'] for _, r in snap.iterrows()}
+    pct_map = {r['code']: r['pct'] for _, r in snap.iterrows()}
     _missing = [c for c, _ in cands if c not in name_map]
     if _missing:
         name_map.update(fetch_names(_missing))
@@ -504,6 +508,7 @@ def scan(args):
                     'ytd_vol_ratio': round(sg['ytd_vol_ratio'], 2),
                     'ytd_same': round(sg['ytd_same'], 2),
                     'decline_5d_pct': dict(cands)[c],
+                    'day_pct': round(pct_map.get(c, 0.0), 2),
                     'calm3_maxmin': (round(sg['calm3_maxmin'], 2)
                                      if math.isfinite(sg.get('calm3_maxmin', float('nan')))
                                      else None),
@@ -651,6 +656,7 @@ def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '') -> s
 <td><b>{r['name']}</b><div class="sub">{r['code']}</div></td>
 <td class="num">{r['close']}</td>
 <td class="num">{r['decline_5d_pct']:+.1f}%</td>
+<td class="num">{r.get('day_pct', 0.0):+.1f}%</td>
 <td class="num">{r['bar_change_pct']:+.2f}%</td>
 <td class="num"><b>{r['vol_ratio']:.2f}×</b></td>
 <td class="num"><b>{r.get('ytd_same', 0) if pd.notna(r.get('ytd_same')) else 0:.2f}×</b></td>
@@ -684,6 +690,7 @@ def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '') -> s
 <td>{r['bar_time'][11:]}</td>
 <td class="num"><b>{r['close']}</b></td>
 <td class="num">{r['decline_5d_pct']:+.1f}%</td>
+<td class="num">{r.get('day_pct', 0.0):+.1f}%</td>
 <td class="num"><b>{r['vol_ratio']:.2f}×</b></td>
 <td class="num"><b>{yv:.2f}×</b></td>
 <td class="num"><b>{st}</b></td>
@@ -720,7 +727,7 @@ table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 <div class="mkt {'warn' if ('不交易' in market_msg or '下方' in market_msg) else 'ok'}">大盘状态：{market_msg}{'　⚠ 按规则今日不宜开仓，以下信号仅供参考' if ('不交易' in market_msg or '下方' in market_msg) else ''}</div>
 <div class="top5">
 <div class="top5h">今日 TOP {TOP_N}　按同期放量倍数降序　（截至 {snap_time}；同期放量 &lt; {SAME_VOL_MIN} 已全部过滤）</div>
-<table class="t5"><tr><th>#</th><th>名称</th><th>代码</th><th>触发bar</th><th>信号价</th><th>近5日跌</th><th>瞬时量比</th><th>同期放量</th><th>强度</th><th>现价偏离</th><th>平静度</th><th>爆发</th></tr>
+<table class="t5"><tr><th>#</th><th>名称</th><th>代码</th><th>触发bar</th><th>信号价</th><th>近5日跌</th><th>当日涨幅</th><th>瞬时量比</th><th>同期放量</th><th>强度</th><th>现价偏离</th><th>平静度</th><th>爆发</th></tr>
 {''.join(t5_rows)}</table>
 <div class="tip">操作：信号根收盘价买入，每只 1 万元；T+1 起 5 个交易日内日K收盘 ≥ 买入价×1.05 即卖，第 5 日收盘强平；<b>不加止损</b>。<br>
 强度：★★★ ≥{SAME_VOL_STRONG}×（回测 PF ~2.1）　★★ ≥{SAME_VOL_MID}×　★ ≥{SAME_VOL_MIN}×。<b>宁缺毋滥</b>——今日不足 {TOP_N} 只就是不达标，不要为凑数买入。<br>
@@ -731,8 +738,9 @@ table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 <br><b>排序</b>：按<b>同期放量倍数</b>降序（v8，24个月回测 PF 1.80，优于瞬时量比排的 1.35）
 <br><b>建议操作</b>：信号根收盘价买入，每只1万元；T+1~T+5 内日K收盘 ≥ 买入价×1.05 即卖出，否则第5日收盘强平；<b>不加止损</b>（实测止损反而更差）
 <br><b>★ 平静蓄势形态</b>：前3根量能均匀（平静度 ≤1.5）且信号根放大 ≥2×，为你偏好的形态，仅作标注不做过滤
+<br><b>当日涨幅过滤</b>：扫描时已剔除当日涨幅 &gt; {DAY_GAIN_MAX}% 的个股（已大幅拉升、不宜追高）
 </div>
-<table><tr><th>级别</th><th>触发bar</th><th>名称</th><th>信号价</th><th>近5日跌幅</th><th>当根涨幅</th><th>瞬时量比</th><th>同期放量</th><th>信号根量</th><th>今/昨量(全天)</th><th>平静度</th><th>爆发</th></tr>
+<table><tr><th>级别</th><th>触发bar</th><th>名称</th><th>信号价</th><th>近5日跌幅</th><th>当日涨幅</th><th>当根涨幅</th><th>瞬时量比</th><th>同期放量</th><th>信号根量</th><th>今/昨量(全天)</th><th>平静度</th><th>爆发</th></tr>
 {''.join(rows)}</table>
 </div></body></html>"""
 
