@@ -12,7 +12,7 @@ on:
 permissions:
   contents: write
 
-# 串行锁: 外部定时器(cron-job.org)与 GitHub 原生定时可能重叠, 自动排队避免同时 git push 冲突
+# 串行锁: 纯靠 GitHub 原生 cron 驱动; 此锁仅用于防止"手动 Run workflow"与定时运行重叠时同时 git push 冲突
 concurrency:
   group: scout
   cancel-in-progress: false
