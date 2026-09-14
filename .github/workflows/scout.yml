@@ -23,6 +23,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 用 GitHub API 拉取最新源码, 覆盖 git checkout 可能检出的滞后 blob
+      # (GitHub 的 git 对象复制偶尔滞后, API 内容后端则是最新的, 这里双保险)
+      - name: 用 GitHub API 刷新最新源码 (绕过 git 对象复制滞后)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os, json, base64, urllib.request
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['GITHUB_REPOSITORY']
+          H = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'x'}
+          for f in ['live_scout.py', 'screener_v2.py']:
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/contents/{f}', headers=H)
+              d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+              open(f, 'wb').write(base64.b64decode(d['content']))
+          print('源码已通过 API 刷新为最新 (绕过 git 对象滞后)')
+          PY
 
       - name: 设置 Python
         uses: actions/setup-python@v5
