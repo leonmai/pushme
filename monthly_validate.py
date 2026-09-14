@@ -175,19 +175,22 @@ def bs_pool_amount(codes: list, start: str, end: str) -> dict:
 
 
 def get_pool(sample: int, base_month: str = '2026-08') -> pd.DataFrame:
-    """股票池: 用基准月的日均成交额降序取 Top sample (baostock 真实历史, 不依赖盘前快照)"""
+    """股票池: 用基准月的日均成交额降序取 Top sample (baostock 真实历史, 不依赖盘前快照)
+    注: 科创板(688xxx)已被剔除 (用户要求全部选股/回测不含科创板)"""
     if POOL_FILE.exists():
         df = pd.read_csv(POOL_FILE, dtype={'code': str})
         df['code'] = df['code'].astype(str).str.zfill(6)
+        df = df[~df['code'].astype(str).str.startswith('688')]   # 科创板剔除 (防旧缓存含688)
         if len(df) >= sample:
             df = df.head(sample)
-            log(f'股票池 {len(df)} 只 (读缓存)')
+            log(f'股票池 {len(df)} 只 (读缓存, 已剔除科创板)')
             return df[['code', 'name']]
     log('构建股票池: 新浪全量清单 + baostock 日均成交额…')
     uni = sina_all_codes()
     if uni.empty:
         return uni
     uni = uni[~uni['code'].str.startswith(('4', '8', '9'))]
+    uni = uni[~uni['code'].astype(str).str.startswith('688')]   # 科创板剔除
     uni = uni[~uni['name'].astype(str).str.contains('ST|退', na=False)]
     log(f'  候选 {len(uni)} 只')
     y, m = int(base_month[:4]), int(base_month[5:7])
