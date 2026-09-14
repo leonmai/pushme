@@ -529,6 +529,12 @@ def scan(args):
                     'burst3': (round(sg['burst3'], 2)
                                if math.isfinite(sg.get('burst3', float('nan'))) else None),
                 })
+    # 科创板(688xxx)兜底: 万一候选池漏网, 生成信号前再拦一道
+    if EXCLUDE_STAR_MARKET and not getattr(args, 'allow_star', False):
+        before = len(sigs)
+        sigs = [s for s in sigs if not str(s['code']).startswith('688')]
+        if len(sigs) != before:
+            log(f"  scan 阶段剔除科创板 {before - len(sigs)} 只")
     if not sigs:
         log("本轮无个股触发信号。")
         return [], market_msg
@@ -588,7 +594,7 @@ def tqdm_as_completed(futs):
             yield f
 
 
-def save_out(sigs: list, snap_time: str, market_msg: str = ''):
+def save_out(sigs: list, snap_time: str, market_msg: str = '', args=None):
     if not sigs:
         return None, None
     today = now_cst().date().strftime('%Y-%m-%d')
@@ -600,6 +606,12 @@ def save_out(sigs: list, snap_time: str, market_msg: str = ''):
         old = pd.read_csv(f_csv, dtype={'code': str})
         old['code'] = old['code'].astype(str).str.zfill(6)
         df = pd.concat([old, df]).drop_duplicates(subset=['code', 'bar_time']).reset_index(drop=True)
+    # 科创板(688xxx)剔除: 用户要求计划任务不含科创板 (兜底——防止累计CSV里遗留的科创板行混进来)
+    if EXCLUDE_STAR_MARKET and not (args and getattr(args, 'allow_star', False)):
+        n_star_out = int(df['code'].astype(str).str.startswith('688').sum())
+        if n_star_out:
+            df = df[~df['code'].astype(str).str.startswith('688')].reset_index(drop=True)
+            log(f"  输出阶段再剔除科创板(遗留/累计) {n_star_out} 只")
     key = 'vol_ratio' if 'vol_ratio' in df.columns else 'ytd_same'
     df = df.sort_values(key, ascending=False).reset_index(drop=True)
 
@@ -778,7 +790,7 @@ def main():
     t0 = time.time()
     fresh, market_msg = scan(args)
     if fresh:
-        f_top5, f_html = save_out(fresh, now_cst().strftime('%H:%M'), market_msg)
+        f_top5, f_html = save_out(fresh, now_cst().strftime('%H:%M'), market_msg, args)
         today = now_cst().date().strftime('%Y-%m-%d')
         ad = pd.read_csv(LIVE_DIR / f"signals_{today}.csv")
         ad['code'] = ad['code'].astype(str).str.zfill(6)
