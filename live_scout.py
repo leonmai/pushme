@@ -606,8 +606,8 @@ def save_out(sigs: list, snap_time: str, market_msg: str = '', args=None):
         old = pd.read_csv(f_csv, dtype={'code': str})
         old['code'] = old['code'].astype(str).str.zfill(6)
         df = pd.concat([old, df]).drop_duplicates(subset=['code', 'bar_time']).reset_index(drop=True)
-    # 科创板(688xxx)剔除: 用户要求计划任务不含科创板 (兜底——防止累计CSV里遗留的科创板行混进来)
-    if EXCLUDE_STAR_MARKET and not (args and getattr(args, 'allow_star', False)):
+    # 科创板(688xxx)剔除: 用户要求全部选股/回测/推送均不含科创板 (兜底——防止累计CSV里遗留的科创板行混进来)
+    if EXCLUDE_STAR_MARKET:
         n_star_out = int(df['code'].astype(str).str.startswith('688').sum())
         if n_star_out:
             df = df[~df['code'].astype(str).str.startswith('688')].reset_index(drop=True)
@@ -782,8 +782,6 @@ def main():
     ap.add_argument('--top', type=int, default=5, help='提示: 每日建议买入前 N 只')
     ap.add_argument('--allow-push-offhours', action='store_true',
                     help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
-    ap.add_argument('--allow-star', action='store_true',
-                    help='允许包含科创板(688xxx)股票(默认计划任务剔除)')
     args = ap.parse_args()
 
     log("== 盘中实时盯盘 v7 ==")
