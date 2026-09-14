@@ -89,6 +89,7 @@ SAME_VOL_MID = 1.8          # ★★ 中等
 SAME_VOL_STRONG = 2.3       # ★★★ 强信号 (对应回测全天 1.47, PF ~1.85)
 CHASE_LIMIT_PCT = 3.0       # 追高上限: 现价较信号价涨超 3% 提示慎追
 DAY_GAIN_MAX = 3.0        # 当日涨幅过滤: 扫描时剔除当日涨幅 > 此值的个股 (已大幅拉升, 不宜追高)
+EXCLUDE_STAR_MARKET = True    # 科创板(688xxx)剔除: 用户要求计划任务不含科创板; 手动跑加 --allow-star 放开
 
 # A股 15min bar 的 close-time 标记 (与 screener_v2 一致, 已排除的三根不列入)
 BAR_TIMES = [(9, 45), (10, 0), (10, 15), (10, 30), (10, 45), (11, 0), (11, 15),
@@ -435,12 +436,20 @@ def scan(args):
     snap = fetch_snapshot(args.pool + 200)
     snap = snap[~snap['code'].str.startswith(S.POOL_EXCLUDE_PREFIX)]
     snap = snap[~snap['name'].str.contains('ST|退', na=False)]
+    # 科创板(688xxx)剔除: 用户要求计划任务不含科创板 (手动跑加 --allow-star 放开)
+    if EXCLUDE_STAR_MARKET and not getattr(args, 'allow_star', False):
+        n_star = int(snap['code'].astype(str).str.startswith('688').sum())
+        snap = snap[~snap['code'].astype(str).str.startswith('688')]
+    else:
+        n_star = 0
     snap = snap[(snap['turnover'] >= MIN_TURNOVER) & (snap['price'] >= 1.0) &
                 (snap['pct'] >= -6)]
     n_over_gain = int((snap['pct'] > DAY_GAIN_MAX).sum())
     snap = snap[snap['pct'] <= DAY_GAIN_MAX]
     snap = snap.sort_values('turnover', ascending=False).head(args.pool).reset_index(drop=True)
-    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/极端涨跌/当日涨幅>{DAY_GAIN_MAX}% 的 {n_over_gain} 只)")
+    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/科创板/极端涨跌/当日涨幅>{DAY_GAIN_MAX}% 的 {n_over_gain} 只)")
+    if n_star:
+        log(f"  其中科创板(688xxx)剔除 {n_star} 只")
 
     # 3) 近5日跌幅 (每天算一次, 结果入 state)
     day_key = today.strftime('%Y-%m-%d')
@@ -761,6 +770,8 @@ def main():
     ap.add_argument('--top', type=int, default=5, help='提示: 每日建议买入前 N 只')
     ap.add_argument('--allow-push-offhours', action='store_true',
                     help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
+    ap.add_argument('--allow-star', action='store_true',
+                    help='允许包含科创板(688xxx)股票(默认计划任务剔除)')
     args = ap.parse_args()
 
     log("== 盘中实时盯盘 v7 ==")
