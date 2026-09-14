@@ -68,6 +68,7 @@ CACHE_TTL_DAYS = 7  # 缓存有效期 7 天
 # ============ 配置 ============
 POOL_MIN_TURNOVER = 5_000_000
 POOL_EXCLUDE_PREFIX = ('bj',)
+EXCLUDE_STAR_MARKET = True    # 科创板(688xxx)剔除: 用户要求全部选股/回测不含科创板
 
 INTRADAY_PCT_MIN = 0.0
 INTRADAY_PCT_MAX = 2.0
@@ -124,9 +125,16 @@ def market_prefix(code: str) -> str:
     return s
 
 
+def is_star_market(code: str) -> bool:
+    """科创板(688xxx)判定 (纯6位代码或带 sh/sz/bj 前缀均可)"""
+    return code_format(code).startswith('688')
+
+
 def is_valid_pool_code(code: str) -> bool:
     s = str(code)
     if s.startswith(POOL_EXCLUDE_PREFIX):
+        return False
+    if EXCLUDE_STAR_MARKET and is_star_market(s):
         return False
     return True
 
@@ -153,6 +161,11 @@ def get_stock_pool() -> pd.DataFrame:
     df = df[df['turnover'] >= POOL_MIN_TURNOVER]
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['price'] >= 1.0]
+    # 科创板(688xxx)剔除: 用户要求全部选股/回测不含科创板
+    if EXCLUDE_STAR_MARKET:
+        n_star = int(df['code'].astype(str).str.startswith('688').sum())
+        df = df[~df['code'].astype(str).str.startswith('688')]
+        log(f"剔除科创板(688xxx): {n_star} 只")
     df = df.reset_index(drop=True)
     log(f"股票池: {len(df)} 只")
     _pool_cache = df
