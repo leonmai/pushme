@@ -754,6 +754,8 @@ def main():
     ap.add_argument('--market-filter', action='store_true',
                     help='强制启用上证>MA20 择时 (v8 默认已关闭)')
     ap.add_argument('--top', type=int, default=5, help='提示: 每日建议买入前 N 只')
+    ap.add_argument('--allow-push-offhours', action='store_true',
+                    help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
     args = ap.parse_args()
 
     log("== 盘中实时盯盘 v7 ==")
@@ -797,7 +799,13 @@ def main():
         try:
             html = Path(f_html).read_text(encoding='utf-8') if f_html and Path(f_html).exists() else ''
             if html:
-                PN.push_html(f"盘中信号 {now_cst().date()} · 新增 {len(fresh)} 只", html)
+                now = now_cst()
+                offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
+                            or now.hour > 15 or (now.hour == 15 and now.minute > 30))
+                if offhours and not args.allow_push_offhours:
+                    log(f"非交易时段({now:%H:%M} 北京), 跳过微信推送(避免盘后延迟运行误推)")
+                else:
+                    PN.push_html(f"盘中信号 {now_cst().date()} · 新增 {len(fresh)} 只", html)
         except Exception as e:
             log(f"推送异常(不影响选股): {e}")
     else:
