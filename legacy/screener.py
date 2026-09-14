@@ -46,6 +46,7 @@ from tqdm import tqdm
 # ============ 全局配置 ============
 POOL_MIN_TURNOVER = 5_000_000       # 股票池：当日成交额 >= 500 万
 POOL_EXCLUDE_PREFIX = ('bj',)        # 排除北交所（流动性差，规则不适用）
+EXCLUDE_STAR_MARKET = True           # 科创板(688xxx)剔除: 用户要求全部选股/回测不含科创板
 LOOKBACK_TRADING_DAYS = 20          # "近一个月" = 20 个交易日
 INTRADAY_PCT_MIN = 0.0              # 15min 涨幅下限
 INTRADAY_PCT_MAX = 2.0              # 15min 涨幅上限
@@ -92,6 +93,8 @@ def is_valid_pool_code(code: str) -> bool:
     s = str(code)
     if s.startswith(POOL_EXCLUDE_PREFIX):
         return False
+    if EXCLUDE_STAR_MARKET and s.startswith('688'):
+        return False
     if 'ST' in s or '退' in s:
         return False
     return True
@@ -117,6 +120,8 @@ def get_stock_pool() -> pd.DataFrame:
     df = df[df['turnover'] >= POOL_MIN_TURNOVER]
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['price'] >= 1.0]
+    if EXCLUDE_STAR_MARKET:
+        df = df[~df['code'].str.startswith('688')]
     log(f"股票池: {len(df)} 只")
     _pool_cache = df.reset_index(drop=True)
     return _pool_cache
