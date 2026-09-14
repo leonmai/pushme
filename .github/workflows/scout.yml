@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# 串行锁: 外部定时器(cron-job.org)与 GitHub 原生定时可能重叠, 自动排队避免同时 git push 冲突
+concurrency:
+  group: scout
+  cancel-in-progress: false
+
 jobs:
   scout:
     runs-on: ubuntu-latest
