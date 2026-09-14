@@ -26,28 +26,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 用 GitHub API 拉取最新源码, 覆盖 git checkout 可能检出的滞后 blob
-      # (GitHub 的 git 对象复制偶尔滞后, API 内容后端则是最新的, 这里双保险)
-      - name: 用 GitHub API 刷新最新源码 (绕过 git 对象复制滞后)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python - <<'PY'
-          import os, json, base64, urllib.request
-          token = os.environ['GH_TOKEN']
-          repo = os.environ['GITHUB_REPOSITORY']
-          H = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'x'}
-          for f in ['live_scout.py', 'screener_v2.py']:
-              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/contents/{f}', headers=H)
-              d = json.loads(urllib.request.urlopen(req, timeout=30).read())
-              open(f, 'wb').write(base64.b64decode(d['content']))
-          print('源码已通过 API 刷新为最新 (绕过 git 对象滞后)')
-          PY
-
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      # 关键: 用 GitHub Contents API 拉取最新源码, 覆盖 git checkout 可能检出的滞后 blob
+      # (GitHub 的 git 对象复制偶尔滞后, API 内容后端则是最新的)
+      # 下载后立即用 python 校验"修复串"是否到位 —— 不到位就显式失败, 绝不让旧代码静默跑
+      - name: 用 API 刷新源码并校验修复已生效
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -c "
+          import os, json, base64, urllib.request, sys
+          token = os.environ['GH_TOKEN']; repo = os.environ['GITHUB_REPOSITORY']
+          H = {'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'User-Agent': 'x'}
+          ok = True
+          for f in ['live_scout.py', 'screener_v2.py']:
+              req = urllib.request.Request('https://api.github.com/repos/%s/contents/%s' % (repo, f), headers=H)
+              d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+              open(f, 'wb').write(base64.b64decode(d['content']))
+              print('downloaded', f, 'sha', d.get('sha', '')[:10], 'bytes', len(d['content']))
+          src = open('live_scout.py', encoding='utf-8').read()
+          sv = open('screener_v2.py', encoding='utf-8').read()
+          if 'iloc[max(0, i - 3):i].mean()' not in src:
+              print('FATAL: live_scout.py 修复串缺失 (仍是旧 cv/pv 逻辑)'); ok = False
+          if 'VOL_MULT = 2.0' not in sv:
+              print('FATAL: screener_v2.py VOL_MULT 缺失'); ok = False
+          print('FIX VERIFIED' if ok else 'FIX MISSING -> abort')
+          sys.exit(0 if ok else 1)
+          "
 
       - name: 安装依赖 (云端仅必需项, 装得快)
         run: pip install -r requirements.txt
@@ -55,7 +64,7 @@ jobs:
       - name: 盘中扫描 + 推送微信
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: python live_scout.py
+        run: python3 live_scout.py
 
       - name: 提交结果回仓库 (持久化信号去重 state)
         run: |
