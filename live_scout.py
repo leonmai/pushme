@@ -342,10 +342,15 @@ def find_all_signal_bars(df15: pd.DataFrame, target_day: date) -> list[dict]:
         if not (math.isfinite(op) and math.isfinite(cl)
                 and math.isfinite(cv) and math.isfinite(pv)):
             continue
-        if op <= 0 or pv <= 0:
+        if op <= 0 or pv <= 0 or cv <= 0:
             continue
         chg = (cl - op) / op * 100
-        vr = cv / pv
+        # 量比基线: 用前3根均值, 抵御新浪偶发废bar(单根 V=100 等异常小量)
+        #   单根 prev 对比会被这种 glitch 放大成假放量(如 1457x), 均值平滑后正确识别
+        baseline = float(bars['volume'].iloc[max(0, i - 3):i].mean())
+        if baseline <= 0:
+            continue
+        vr = cv / baseline
         if not (S.INTRADAY_PCT_MIN <= chg <= S.INTRADAY_PCT_MAX):
             continue
         if vr < S.VOL_MULT:
