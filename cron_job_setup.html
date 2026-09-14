@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="dO0mLomqcWGRbDbXGxzA6H">
+<head data-page-node-id="fdRXm6HCzGzLPmEb6ckYAO">
+<meta charset="UTF-8" data-page-node-id="hPBuGY3QevwKIg6YqmrEHL">
+<title>cron-job.org 配置参考 · A股盘中盯盘</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,"Microsoft YaHei",sans-serif;background:#f5f7fa;color:#1f2933;max-width:820px;margin:24px auto;padding:0 16px;}
+  h1{font-size:22px;margin-bottom:4px;}
+  .sub{color:#66727f;margin-bottom:20px;font-size:13px;}
+  .card{background:#fff;border:1px solid #e3e8ef;border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .step{font-weight:600;color:#2563eb;margin-bottom:10px;font-size:15px;}
+  table{width:100%;border-collapse:collapse;}
+  td{padding:8px 10px;border:1px solid #eef1f5;vertical-align:top;font-size:14px;}
+  td.k{width:160px;background:#f8fafc;font-weight:600;color:#374151;}
+  code{background:#0f172a;color:#e2e8f0;padding:2px 7px;border-radius:5px;font-size:13px;display:inline-block;word-break:break-all;margin:2px 0;}
+  .warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:12px 16px;font-size:13px;margin-bottom:16px;}
+  .ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;border-radius:10px;padding:12px 16px;font-size:13px;margin-bottom:16px;}
+  ol{margin:8px 0 0 18px;padding:0;font-size:14px;line-height:1.7;}
+</style>
+</head>
+<body data-page-node-id="bRXqFdyvudxcKhAwiB9rtO">
+<div class="warn" data-page-node-id="DEPR0001" style="font-size:14px;">
+  ⚠️ <b>已弃用（2026-09-14）</b>：本项目现已<b>纯靠 GitHub 原生 cron</b> 驱动（<code data-page-node-id="DEPR0002">scout.yml</code> 的 <code data-page-node-id="DEPR0003">schedule: '*/30 1-7 * * 1-5'</code>，= 北京 9:00–15:30 每 30 分钟）。下方外部定时器 <b>cron-job.org 已停用</b>，请勿再据此新建或保留任务；其依赖的旧 PAT 已撤销轮换。
+</div>
+<h1 data-page-node-id="nmpSp1GXHZPHGM67XwKGcZ">cron-job.org 配置参考（已弃用存档）</h1>
+<div class="sub" data-page-node-id="yFduqsQLBhYWh7pmS5alUV">任务：每 30 分钟触发 GitHub Actions 跑 A股盘中盯盘（取代不可靠的 GitHub 原生定时）</div>
+
+<div class="ok" data-page-node-id="dEavyXhIMZQVL33nbt5FsJ">✅ 已实测：<code data-page-node-id="Ezy9Lihmvwws7qEyHNJDjE">POST dispatches</code> 返回 204，GitHub 立即出现新的 workflow_dispatch 运行并正常推送微信。下方参数为验证过的真实值。</div>
+
+<div class="card" data-page-node-id="IO12UENJGcBEXD1iAjwJKt">
+  <div class="step" data-page-node-id="wx1EcErbGNvCwV2rNeVXrj">创建 Cronjob 时逐项填写</div>
+  <table data-page-node-id="cbnAO9rVBJ1jo4LnLO2oEr">
+    <tr data-page-node-id="y8ScEtoPCdBNq5ZVKWJWDs"><td class="k" data-page-node-id="h7j20WElVJrWj0zalBEd3U">Title</td><td data-page-node-id="v1hpQF3iuHCCGvvBBr5lYE">选填，例如 <code data-page-node-id="td3sMMlKCM59CoD6cKV2Cu">A股盘中盯盘 scout</code></td></tr>
+    <tr data-page-node-id="Os1p4s1SPfe5kH0bIY7Pw0"><td class="k" data-page-node-id="9bxqcyfTH5ZmbVEXSvqR8b">URL</td><td data-page-node-id="kZDw4AOIZYNxq2vGiKj5QE"><code data-page-node-id="OExeyzTxW9cFYmpf91NuMU">https://api.github.com/repos/leonmai/pushme/actions/workflows/scout.yml/dispatches</code></td></tr>
+    <tr data-page-node-id="DB3KBHOjjA2hCZibawVzDN"><td class="k" data-page-node-id="3WS2bj3CaEwTvviD18wyjW">Request method</td><td data-page-node-id="ijXqcjG1RsrWwG3hM7DWOD"><code data-page-node-id="D569rnkEQHdv9vJuqdTyDJ">POST</code></td></tr>
+    <tr data-page-node-id="UrmMrCShh5CQ9mJFDCeQ9s"><td class="k" data-page-node-id="b3QvF49SAAGWTQ0jjKUMRJ">Request body type</td><td data-page-node-id="Avld3KIv21xjFBCJEAks26"><code data-page-node-id="vkDrCbjhyKYYgZJ7HZAw9k">application/json</code></td></tr>
+    <tr data-page-node-id="KQo3ksY3OYxitbg3PmfXTO"><td class="k" data-page-node-id="CbqdDrN0LWuAk3ngLImcgI">Request body / POST data</td><td data-page-node-id="nK2yiEJgOcAy2KUjZuwXwb"><code data-page-node-id="BUPc4vQlYUZSHLZpszQ0Vc">{"ref":"main"}</code></td></tr>
+    <tr data-page-node-id="Q2U05mYf40wUyGQgZ5SZI0"><td class="k" data-page-node-id="Cmo43okgt3fTI9cLVF2fyH">Timezone</td><td data-page-node-id="vNziJsz2H1w6JU5EmAzq58"><b data-page-node-id="w50CVvtImP9brTidy3fVRw">必须选 UTC</b>（北京时间=UTC+8，下面 cron 用 UTC 写）</td></tr>
+    <tr data-page-node-id="pYEQtuhiR6BFxQ2ZDtVZWz"><td class="k" data-page-node-id="dsi8bqFuuQDU1Nie9hZHD4">Schedule</td><td data-page-node-id="FY61zULhnDdnDH5BJqYvc9">选 <b data-page-node-id="lmskAi5ccJkoj6cEUO1Sw1">Advanced (cron)</b>，填入 <code data-page-node-id="1SJ9peWzBmKNTKwiz0MHPh">*/30 1-7 * * 1-5</code><br data-page-node-id="AihdC8xDPmzVgmcARAeDJv"><span style="color:#66727f;font-size:12px;" data-page-node-id="JC67DRAIrqC1DiiF1aS9tf">含义：UTC 1:00–7:30 每 30 分 = 北京 9:00–15:30 周一至五</span></td></tr>
+  </table>
+</div>
+
+<div class="card" data-page-node-id="ohmKofZiqi4eHYEObZmPEP">
+  <div class="step" data-page-node-id="hmeJLGEOT99dqAvF4aeDnf">Headers（点开 Add header 添加两行）</div>
+  <table data-page-node-id="Miutm3y7OhpGbWC6uQDC5P">
+    <tr data-page-node-id="9ZMmyZGNTjeHNPAGlLUVi0"><td class="k" data-page-node-id="ElWPBsZLFcI7B7CpryevdQ">Header 1</td><td data-page-node-id="SGECVqHPLS3t803I7mXRbC"><code data-page-node-id="Fbf3WCE1iCKgvl6ewqPY8F">Accept</code> &nbsp;→&nbsp; <code data-page-node-id="kvEdWUt4mxct4bKVqFzZNl">application/vnd.github+json</code></td></tr>
+    <tr data-page-node-id="kZBXw6pSyhSWJBshutyuAn"><td class="k" data-page-node-id="Utvoebnsba8nxA3UNoYHhg">Header 2</td><td data-page-node-id="cnCAY10oqCvhJvObTefIay"><code data-page-node-id="VHt2dwnIYa4zCJ9C4NYbYB">Authorization</code> &nbsp;→&nbsp; <code data-page-node-id="q2Ir3SEreRkJpHCbYKVGeF">Bearer &lt;你的token&gt;</code></td></tr>
+  </table>
+</div>
+
+<div class="warn" data-page-node-id="I4wqdnwrKJkkUVSHtwO42l">⚠️ Token 安全建议（重要）：当前会话里用的那个全权限 PAT 已经多次暴露，建议到 GitHub 新建一个<strong data-page-node-id="8KVhhSZzNs3JqggdXOTP1J">细粒度 token</strong>（Fine-grained）：只授权 <code data-page-node-id="vnsmpVgmPIJukqI6vjd1UW">leonmai/pushme</code> 这一个仓库的 <code data-page-node-id="TgnubblvDcszPQzGdZPPXh">Actions: Read and Write</code>，然后把上面 Header 2 里的 &lt;你的token&gt; 换成它，再去 Settings → Developer settings 把旧的 <code data-page-node-id="rXw1ufbhJ4gOx2mcgSM0d9">ghp_kk4...RUIO</code> 撤销轮换。cron-job.org 上只放这个最小权限 token。</div>
+
+<div class="card" data-page-node-id="PVCR90XA7RUWQtC9IvvkjJ">
+  <div class="step" data-page-node-id="oUCQZhZeyAtVuGUBCCoT7F">创建后验证</div>
+  <ol data-page-node-id="DgLXlnUJXsd5VsAN93BVCD">
+    <li data-page-node-id="KKRKd03A0u1nYV0sKTGH8O">保存后，在 cron-job.org 该任务点 <b data-page-node-id="SYmbQmIaaR8M3HitYAR8SL">Run now</b>（立即执行一次）。</li>
+    <li data-page-node-id="k04TUapOPeekGBPY9QrYxx">到 GitHub 仓库 → Actions 页面，应看到一条新的 <code data-page-node-id="yyLC65n2nDyNpoje8s2GoB">workflow_dispatch</code> 运行，且盘中时段会收到微信推送。</li>
+    <li data-page-node-id="NeGMSsU3O6jX9Eoqzws2D1">之后每交易日 9:00–15:30 每 30 分钟自动触发，无需手动。</li>
+  </ol>
+</div>
+
+<div class="card" data-page-node-id="dotRPlWgf45tAcAtNnDXhf">
+  <div class="step" data-page-node-id="qEB3UqxEGSU0KJdQrssb6u">备选：用自己的服务器/VPS（不要 cron-job.org 也行）</div>
+  <p style="font-size:14px;margin:6px 0;" data-page-node-id="3KuXllnKALhqBmzBzi16lC">本地已留可复用脚本 <code data-page-node-id="C8BL5jBt3VYrdOCXgAmCxF">trigger_scout.py</code>，在服务器上加一行 crontab 即可：</p>
+  <code data-page-node-id="ZIyGa1fHZPLG1AoCRwMCyy">*/30 1-7 * * 1-5 GH_DISPATCH_TOKEN=你的token /usr/bin/python3 /path/trigger_scout.py</code>
+  <p style="font-size:13px;color:#66727f;margin-top:8px;" data-page-node-id="yqtTv4lo1TQx93MYFW9sO7">（同样 timezone 用 UTC，对应北京交易时段）</p>
+</div>
+</body>
+</html>
