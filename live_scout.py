@@ -456,11 +456,13 @@ def scan(args):
     cached = st.get('decline', {}).get('date') == day_key
     if cached and not args.force:
         decl = st['decline']['data']
+        crash = st['decline'].get('crash', {})
         log(f"复用今日已算的近5日跌幅 ({len(decl)} 只)")
     else:
         start = (today - timedelta(days=40)).strftime('%Y-%m-%d')
         end = today.strftime('%Y-%m-%d')
         decl = {}
+        crash = {}
 
         def work(row):
             ddf = fetch_daily_live(row['code'], start, end)
@@ -469,7 +471,11 @@ def scan(args):
             ok, diag = S.check_recent_decline(ddf, today, min_pct=99)  # 先算实际跌幅
             if not diag:
                 return None
-            return row['code'], round(diag['cum_pct'], 2)
+            crash_flag = S.has_recent_crash(ddf, today,
+                                            window=S.CRASH_WINDOW,
+                                            consec=S.CRASH_CONSEC,
+                                            drop_pct=S.CRASH_DROP_PCT)
+            return row['code'], round(diag['cum_pct'], 2), crash_flag
 
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
             futs = [ex.submit(work, row) for _, row in snap.iterrows()]
@@ -478,15 +484,22 @@ def scan(args):
                     r = f.result()
                     if r:
                         decl[r[0]] = r[1]
+                        crash[r[0]] = r[2]
                 except Exception:
                     pass
-        st['decline'] = {'date': day_key, 'data': decl}
+        st['decline'] = {'date': day_key, 'data': decl, 'crash': crash}
         save_state(st)
         log(f"近5日累计跌幅计算完成: {len(decl)} 只")
-    # 4) 候选: 近5日跌幅 <= DECLINE_B
-    cands = [(c, p) for c, p in decl.items() if p <= DECLINE_B]
+    # 4) 候选: 近5日跌幅 <= DECLINE_B, 且剔除连续暴跌
+    #    (最近 CRASH_WINDOW 天内出现 CRASH_CONSEC 个连续交易日, 单日跌幅都 > CRASH_DROP_PCT%)
+    decline_pass = [c for c, p in decl.items() if p <= DECLINE_B]
+    n_excl_crash = sum(1 for c in decline_pass if crash.get(c, False))
+    cands = [(c, p) for c, p in decl.items()
+             if p <= DECLINE_B and not crash.get(c, False)]
     cands.sort(key=lambda x: x[1])          # 跌得多的优先
-    log(f"符合大前提(近5日跌>{abs(DECLINE_B)}%): {len(cands)} 只 → 扫描 15min")
+    log(f"符合大前提(近5日跌>{abs(DECLINE_B)}%): {len(decline_pass)} 只, "
+        f"剔除连续{S.CRASH_CONSEC}日跌超{S.CRASH_DROP_PCT:.0f}%共 {n_excl_crash} 只 → "
+        f"扫描 15min: {len(cands)} 只")
 
     name_map = {r['code']: r['name'] for _, r in snap.iterrows()}
     pct_map = {r['code']: r['pct'] for _, r in snap.iterrows()}
