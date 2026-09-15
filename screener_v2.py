@@ -81,6 +81,13 @@ DECLINE_WINDOW = 5                       # 看几个交易日
 MIN_DECLINE_PCT = -0.5                   # 累计跌幅至少 -0.5% 才算"下跌" (避免噪音)
 RELAX_MIN_DECLINE_PCT = 0.0              # --relax 时只看 close[t-1] < close[t-N], 不要求跌幅门槛
 
+# 连续暴跌剔除 (用户 2026-09-15 新增规则):
+# 最近 CRASH_WINDOW 个交易日内, 若出现 CRASH_CONSEC 个连续交易日, 且每个单日跌幅都 > CRASH_DROP_PCT%,
+# 视为处于连续暴跌/崩盘中, 风险过高, 从候选池剔除 (避免接飞刀).
+CRASH_WINDOW = 5                       # 观察窗口 (交易日)
+CRASH_CONSEC = 3                       # 连续下跌天数
+CRASH_DROP_PCT = 5.0                   # 单日跌幅阈值 (%)
+
 TP_PCT = 1.0                       # 未来 N 天日线涨幅达到 1% 即出场
 HOLD_DAYS = 5                      # 持有期上限 5 个交易日
 CAPITAL_PER_STOCK = 10_000
@@ -484,6 +491,39 @@ def check_recent_decline(ddf: pd.DataFrame, target_dt: date,
     return cum_pct <= min_pct, diag
 
 
+def has_recent_crash(ddf: pd.DataFrame, target_dt: date,
+                     window: int = CRASH_WINDOW,
+                     consec: int = CRASH_CONSEC,
+                     drop_pct: float = CRASH_DROP_PCT) -> bool:
+    """
+    最近 `window` 个交易日内, 是否出现 `consec` 个连续交易日, 每个单日跌幅都 > `drop_pct`%.
+    命中返回 True (该个股应被剔除, 处于连续暴跌中).
+    说明: 用日 K 的「涨跌幅」列 (单日 close-to-close 收益率) 判定; 若缺失则退而由「收盘」现算.
+    """
+    if ddf is None or ddf.empty:
+        return False
+    if '涨跌幅' not in ddf.columns and '收盘' not in ddf.columns:
+        return False
+    date_col = pd.to_datetime(ddf['日期']).dt.date
+    ddf_pre = ddf[date_col < target_dt]
+    if len(ddf_pre) < window:
+        return False
+    last_n = ddf_pre.tail(window).copy()
+    if '涨跌幅' in last_n.columns:
+        rets = pd.to_numeric(last_n['涨跌幅'], errors='coerce').dropna().values
+    else:
+        rets = (last_n['收盘'].pct_change() * 100.0).dropna().values
+    run = 0
+    for r in rets:
+        if r < -drop_pct:
+            run += 1
+            if run >= consec:
+                return True
+        else:
+            run = 0
+    return False
+
+
 # ============ 实时筛选 ============
 def screen_one(row, target_dt: date):
     code = row['code']
@@ -493,6 +533,10 @@ def screen_one(row, target_dt: date):
     ddf = fetch_daily(code, (target_dt - timedelta(days=80)).strftime('%Y-%m-%d'),
                       (target_dt - timedelta(days=1)).strftime('%Y-%m-%d'))
     if not check_recent_decline(ddf, target_dt)[0]:
+        return None
+    if has_recent_crash(ddf, target_dt,
+                        window=CRASH_WINDOW, consec=CRASH_CONSEC,
+                        drop_pct=CRASH_DROP_PCT):
         return None
 
     df15 = fetch_15min(code)
