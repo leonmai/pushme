@@ -826,6 +826,7 @@ def main():
     log("== 盘中实时盯盘 v7 ==")
     t0 = time.time()
     fresh, market_msg = scan(args)
+    st = load_state()                     # 供有信号/无信号两分支共享 (记录 last_push_date 等)
     if fresh:
         f_top5, f_html = save_out(fresh, now_cst().strftime('%H:%M'), market_msg, args)
         today = now_cst().date().strftime('%Y-%m-%d')
