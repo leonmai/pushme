@@ -401,26 +401,21 @@ def save_state(st: dict):
     STATE.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
-def push_no_signal_heartbeat(reason: str, now, st) -> bool:
-    """无信号时, 每日仅推送一次"心跳"告知任务仍在运行, 避免静默让用户误以为挂了。
+def push_no_signal_heartbeat(reason: str, now, st=None) -> bool:
+    """无信号时, 每个扫描周期(每半小时, 交易时段内)都推送一次"心跳"告知任务仍在运行。
     - 仅在交易时段 (9:15-15:30 北京) 推送
-    - 当天已推送过(信号报告 或 无信号心跳)则跳过, 不刷屏
+    - 无信号时每轮都推(不限制每日次数), 让用户知道任务还活着
     返回 True 表示本次实际推送了。"""
-    day_key = now.strftime('%Y-%m-%d')
-    if st.get('last_push_date') == day_key:
-        return False
     offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
                 or now.hour > 15 or (now.hour == 15 and now.minute > 30))
     if offhours:
         return False
     try:
-        title = f"无信号提醒 {now.date()}"
+        title = f"无信号提醒 {now.date()} {now:%H:%M}"
         text = (f"今日无个股触发信号。\n原因: {reason}\n\n"
-                f"盯盘任务正常运行中 —— 仅在无信号时每日推送一次心跳，让你知道它还在跑。")
+                f"盯盘任务正常运行中 —— 每半小时推送一次心跳，让你知道它还在跑。")
         if PN.push_text(title, text):
-            st['last_push_date'] = day_key
-            save_state(st)
-            log(f"已推送'无信号'心跳(当日首次): {reason}")
+            log(f"已推送'无信号'心跳: {reason}")
             return True
     except Exception as e:
         log(f"无信号心跳推送异常(忽略): {e}")
@@ -877,12 +872,12 @@ def main():
         except Exception as e:
             log(f"推送异常(不影响选股): {e}")
     else:
-        # 无信号: 每日仅首次推送一次"心跳", 让用户知道任务仍在运行 (避免静默误以为挂了)
+        # 无信号: 每个扫描周期(每半小时, 交易时段内)都推送一次"心跳", 让用户知道任务仍在运行
         now = now_cst()
         if push_no_signal_heartbeat("盘中未触发信号", now, st):
-            log("本轮无新增信号 → 已推送'无信号'心跳(每日仅一次)")
+            log("本轮无新增信号 → 已推送'无信号'心跳(每半小时一次)")
         else:
-            log("本轮无新增信号（今日已推送过心跳 / 非交易时段，静默）。")
+            log("本轮无新增信号（非交易时段，静默）。")
     log(f"耗时 {time.time()-t0:.0f}s")
 
 
