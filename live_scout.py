@@ -447,7 +447,6 @@ def scan(args):
             log("!! 大盘在 MA20 下方 → 按规则今日不出信号 (熊市不开仓)")
             st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
             save_state(st)
-            push_no_signal_heartbeat(msg, now, st)
             return [], msg
     else:
         log("大盘择时: 已关闭")
@@ -874,7 +873,7 @@ def main():
     else:
         # 无信号: 每个扫描周期(每半小时, 交易时段内)都推送一次"心跳", 让用户知道任务仍在运行
         now = now_cst()
-        if push_no_signal_heartbeat("盘中未触发信号", now, st):
+        if push_no_signal_heartbeat(market_msg, now, st):
             log("本轮无新增信号 → 已推送'无信号'心跳(每半小时一次)")
         else:
             log("本轮无新增信号（非交易时段，静默）。")
