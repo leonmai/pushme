@@ -459,54 +459,46 @@ def push_market_signal(market_msg: str, now, st=None) -> bool:
     return False
 
 
-def push_tracking(st) -> int:
-    """个股跟踪推送: 拉取跟踪池实时价, 计算相对信号价的涨跌幅; 有股才推, 返回推送只数(0=无股不推)。"""
-    tracked = st.get('tracked', {})
-    if not tracked:
+def push_observation_pool(sigs, market_msg, now, st, market_blocked) -> int:
+    """个股观察池推送: 复用原 top5 信号报告的表格格式(HTML), 每周期有候选即推。
+    大盘不交易时 obs=True, 标题/提示改为'观察池·仅供参考', 不推送买入建议。"""
+    if not sigs:
         return 0
-    now = now_cst()
-    # 清理 20 天前的旧项 + 控制池上限 40 (每周期执行, 即使熊市无信号也清理)
-    cutoff = now - timedelta(days=20)
-    for c, info in list(tracked.items()):
-        ad = (info.get('added') or '')[:10]
-        try:
-            if ad and datetime.strptime(ad, '%Y-%m-%d') < cutoff:
-                del tracked[c]
-        except Exception:
-            pass
-    if len(tracked) > 40:
-        keep = sorted(tracked.items(), key=lambda kv: kv[1].get('added', ''))[-40:]
-        tracked.clear()
-        for c, info in keep:
-            tracked[c] = info
-        st['tracked'] = tracked
-        save_state(st)
-    rows = []
-    for code, info in tracked.items():
-        cur, pre = sina_stock_now(str(code))
-        ap = info.get('added_price')
-        tag = ' [观察]' if info.get('obs') else ''
-        nm = (info.get('name', '') or '') + tag
-        if cur is None or not ap:
-            rows.append((nm, code, ap, None, None))
-            continue
-        chg = (cur - ap) / ap * 100.0
-        rows.append((nm, code, ap, cur, chg))
-    rows.sort(key=lambda r: (r[4] if r[4] is not None else -1e9), reverse=True)
-    lines = [f"个股观察池 {len(tracked)} 只（技术达标，仅供参考）:"]
-    for name, code, ap, cur, chg in rows:
-        if cur is None:
-            lines.append(f"  {name}({code}) 现价获取失败")
-        else:
-            arrow = '▲' if chg >= 0 else '▼'
-            lines.append(f"  {name}({code}) 参考{ap}→现{cur:.2f} {arrow}{chg:+.1f}%")
-    text = "\n".join(lines)
+    df = pd.DataFrame(sigs)
+    df['code'] = df['code'].astype(str).str.zfill(6)
+    # 实时价核对「现价 vs 信号价」偏离(同 save_out, 仅用于展示'现价偏离'列)
     try:
-        if PN.push_text(f"个股跟踪 {now.date()} {now:%H:%M}", text):
-            log(f"已推送跟踪: {len(tracked)} 只")
-            return len(tracked)
+        syms = [('sh' if c[0] == '6' else 'sz') + c for c in df['code']]
+        r = requests.get('https://hq.sinajs.cn/list=' + ','.join(syms),
+                         headers={'Referer': 'https://finance.sina.com.cn'}, timeout=15)
+        r.encoding = 'gbk'
+        px = {}
+        for line in r.text.strip().split('\n'):
+            m = re.match(r'var hq_str_(\w+)="(.*)";', line.strip())
+            if not m:
+                continue
+            f = m.group(2).split(',')
+            if len(f) > 3:
+                try:
+                    v = float(f[3])
+                except ValueError:
+                    continue
+                if v > 0:
+                    px[m.group(1)[2:]] = v
+        df['now_price'] = df['code'].map(px)
+        df['chase_pct'] = ((df['now_price'] - df['close']) / df['close'] * 100).round(2)
     except Exception as e:
-        log(f"跟踪推送异常(忽略): {e}")
+        log(f"观察池实时价获取失败(不影响展示): {e}")
+        df['chase_pct'] = None
+    html = build_live_html(df, now.strftime('%H:%M'), market_msg, obs=market_blocked)
+    title = ("个股观察池 · 大盘不交易（仅供参考）" if market_blocked
+             else f"盘中信号 {now.date()} · 候选 {len(sigs)} 只")
+    try:
+        if PN.push_html(title, html):
+            log(f"已推送观察池: {len(sigs)} 只" + (" (大盘不交易·仅供参考)" if market_blocked else ""))
+            return len(sigs)
+    except Exception as e:
+        log(f"观察池推送异常(忽略): {e}")
     return 0
 
 
@@ -660,7 +652,7 @@ def scan(args):
         log("本轮无个股触发信号。")
         st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
         save_state(st)
-        return [], market_msg
+        return [], market_msg, False
 
     # 6) 分级 + 按「同期放量倍数」排序
     #    v8 (2026-09-09): 24 个月 / 11469 条信号回测, 各排序口径下 Top5 组合:
@@ -699,27 +691,15 @@ def scan(args):
             continue
         fresh.append(s)
         pushed.add(key)
-    # 观察池: 技术达标候选自动进池 (setdefault 保留首次纳入价, 不覆盖)
-    tracked = st.setdefault('tracked', {})
-    # 大盘破位日: 把本轮技术达标候选 sigs 全部纳入观察池 (不推买入建议, 仅供自行观察)
-    # 正常日:    仅本轮新信号 fresh 进池
-    _pool_src = sigs if market_blocked else fresh
-    for s in _pool_src:
-        tracked.setdefault(str(s['code']), {
-            'name': s.get('name', ''),
-            'added': now.strftime('%Y-%m-%d %H:%M'),
-            'added_price': s.get('close'),
-            'added_bar': s.get('bar_time'),
-            'obs': market_blocked,
-        })
+    # 观察池 = 候选表格(sigs), 由 main 统一以原 top5 报告格式推送, 此处不再单独维护 tracked 字典
     st['pushed'] = sorted(pushed)[-3000:]
     st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
     save_state(st)
-    log(f"触发 {len(sigs)} 个信号 (含已推送 {repeat} 个), 本轮新增 {len(fresh)} 个; 观察池纳入 {len(_pool_src)} 只")
-    # 大盘破位: 不推买入信号, 但候选已进观察池供自行观察
+    log(f"触发 {len(sigs)} 个信号 (含已推送 {repeat} 个), 本轮新增 {len(fresh)} 个")
+    # 大盘破位: 不推买入信号, 但候选(sigs)仍返回, 由 main 作为观察池推送供自行观察
     if market_blocked:
-        return [], market_msg
-    return fresh, market_msg
+        return sigs, market_msg, True
+    return fresh, market_msg, False
 
 
 def tqdm_as_completed(futs):
@@ -802,7 +782,7 @@ def save_out(sigs: list, snap_time: str, market_msg: str = '', args=None):
     return f_top5, f_html
 
 
-def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '') -> str:
+def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '', obs: bool = False) -> str:
     # 同票只保留同期放量最强的那根, 避免一只票霸占多个名额
     df = df.drop_duplicates(subset=['code'], keep='first').reset_index(drop=True)
     rows = []
@@ -863,13 +843,20 @@ def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '') -> s
 <td class="num">{cm_s}</td>
 <td class="num">{b3_s}{star}</td></tr>""")
 
+    _h1 = ("个股观察池 · " if obs else "盘中实时信号 · ") + f"{now_cst().date()}（更新 {snap_time}）"
+    _top5h = (f"观察池 TOP {TOP_N}　技术达标候选（截至 {snap_time}；非买入建议，仅供参考）"
+              if obs else
+              f"今日 TOP {TOP_N}　按瞬时量比降序　（截至 {snap_time}；同期放量 &lt; {SAME_VOL_MIN} 已全部过滤）")
+    _tip_ops = ("⚠ 大盘不交易，以下为技术达标候选，<b>仅供参考、非买入建议</b>；买不买由你自行决定。"
+                if obs else
+                "操作：信号根收盘价买入，每只 1 万元；T+1 起 5 个交易日内日K收盘 ≥ 买入价 ×1.05 即卖，第 5 日收盘强平；<b>不加止损</b>。")
     return f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
 <title>盘中信号 {now_cst().date()} </title><style>
 body{{font-family:"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1f2430;margin:0;padding:24px}}
 .wrap{{max-width:1100px;margin:0 auto}}
 h1{{font-size:20px}} .meta{{color:#8a93a6;font-size:13px;margin-bottom:14px}}
 table{{border-collapse:collapse;width:100%;background:#fff;font-size:13px}}
-th,td{{border:1px solid #e6e8ef;padding:7px 8px;text-align:center}}
+th,td{{border:1px solid #e6e8ef;padding:7px 24px;text-align:center}}
 th{{background:#f0f2f7}} td.num{{font-variant-numeric:tabular-nums}}
 .sub{{color:#a0a6b5;font-size:11px}}
 .g{{display:inline-block;padding:2px 8px;border-radius:10px;color:#fff;font-weight:700;font-size:12px}}
@@ -887,15 +874,15 @@ table.t5 th{{background:#fdeaea;color:#8f2019}}
 table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 .tip{{margin-top:9px;font-size:12px;color:#5f6675;line-height:1.7}}
 </style></head><body><div class="wrap">
-<h1>盘中实时信号 · {now_cst().date()}（更新 {snap_time}）</h1>
+<h1>{_h1}</h1>
 <div class="meta">v8：近5日累计下跌 ＋ 15min 放量脉冲（量≥前根×2，涨幅0~2%）＋ 同期放量 ≥0.9×，按瞬时量比降序<br>出场：T+1 起 5 日内日K收盘 ≥ 买入价 ×1.05 止盈，第 5 日强平，<b>不加止损</b></div>
 <div class="mkt {'warn' if ('不交易' in market_msg or '下方' in market_msg) else 'ok'}">大盘状态：{market_msg}{'　⚠ 按规则今日不宜开仓，以下信号仅供参考' if ('不交易' in market_msg or '下方' in market_msg) else ''}</div>
 <div class="top5">
-<div class="top5h">今日 TOP {TOP_N}　按瞬时量比降序　（截至 {snap_time}；同期放量 &lt; {SAME_VOL_MIN} 已全部过滤）</div>
+<div class="top5h">{_top5h}</div>
 <table class="t5"><tr><th>#</th><th>名称</th><th>代码</th><th>触发bar</th><th>信号价</th><th>近5日跌</th><th>当日涨幅</th><th>瞬时量比</th><th>同期放量</th><th>强度</th><th>现价偏离</th><th>平静度</th><th>爆发</th></tr>
 {''.join(t5_rows)}</table>
-<div class="tip">操作：信号根收盘价买入，每只 1 万元；T+1 起 5 个交易日内日K收盘 ≥ 买入价×1.05 即卖，第 5 日收盘强平；<b>不加止损</b>。<br>
-强度：★★★ ≥{SAME_VOL_STRONG}×（回测 PF ~2.1）　★★ ≥{SAME_VOL_MID}×　★ ≥{SAME_VOL_MIN}×。<b>宁缺毋滥</b>——今日不足 {TOP_N} 只就是不达标，不要为凑数买入。<br>
+<div class="tip">{_tip_ops}<br>
+强度：★★★ ≥{SAME_VOL_STRONG}×（回测 PF ~2.1）　★★ ≥{SAME_VOL_MID}×　★ ≥{SAME_VOL_MIN}×。<b>宁缺毋滥</b>——不足 {TOP_N} 只即视为不达标，不要为凑数。<br>
 <b>现价偏离</b>标红「慎追」= 现价已比信号价高 {CHASE_LIMIT_PCT}% 以上，此时下单等同于追高，建议放弃或等回落。</div>
 </div>
 <div class="rule">
@@ -937,7 +924,7 @@ def main():
 
     log("== 盘中实时盯盘 v7 ==")
     t0 = time.time()
-    fresh, market_msg = scan(args)
+    sigs, market_msg, market_blocked = scan(args)
     st = load_state()                     # 供有信号/无信号两分支共享 (记录 last_push_date 等)
     now = now_cst()
     offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
@@ -945,60 +932,40 @@ def main():
     # 1) 大盘信号单独推送 (每周期, 交易时段)
     if not offhours:
         push_market_signal(market_msg, now, st)
-    # 2) 个股跟踪推送 (有股才推, 交易时段)
-    if not offhours:
-        push_tracking(st)
-    if fresh:
-        f_top5, f_html = save_out(fresh, now_cst().strftime('%H:%M'), market_msg, args)
-        today = now_cst().date().strftime('%Y-%m-%d')
-        ad = pd.read_csv(LIVE_DIR / f"signals_{today}.csv")
-        ad['code'] = ad['code'].astype(str).str.zfill(6)
-        total = len(ad)
-        k = 'vol_ratio' if 'vol_ratio' in ad.columns else 'ytd_same'
-        ad = ad.drop_duplicates(subset=['code'], keep='first')
-        ad = ad.sort_values(k, ascending=False).head(TOP_N).reset_index(drop=True)
-        cols = ['bar_time', 'name', 'code', 'close', 'decline_5d_pct', 'vol_ratio']
-        names = ['触发bar', '名称', '代码', '信号价', '近5日跌', '量比']
-        if 'ytd_same' in ad.columns:
-            cols.append('ytd_same')
-            names.append('同期放量')
-        cols += ['calm3_maxmin', 'burst3']
-        names += ['平静度', '爆发']
-        show = ad[cols].copy()
-        show.columns = names
-        show.insert(0, '#', range(1, len(show) + 1))
-        yv = ad[k].fillna(0)
-        show['强度'] = yv.apply(lambda v: '★★★' if v >= SAME_VOL_STRONG
-                                else '★★' if v >= SAME_VOL_MID else '★').values
-        if 'chase_pct' in ad.columns:
-            show['现价偏离'] = ad['chase_pct'].apply(
-                lambda v: f'{v:+.1f}% 慎追' if pd.notna(v) and v >= CHASE_LIMIT_PCT
-                else (f'{v:+.1f}%' if pd.notna(v) else '—')).values
-        print("\n" + "=" * 96)
-        print(f"  今日 TOP {TOP_N}（本轮新增 {len(fresh)} 个，当日累计 {total} 个信号，按同期放量降序）")
-        print(f"  同期放量门槛 {SAME_VOL_MIN}×｜不足 {TOP_N} 只即视为当日无好机会，不要凑数")
-        print("=" * 96)
-        print(show.to_string(index=False))
-        print()
-        log(f"TOP{TOP_N} 清单: {f_top5}")
-        log(f"完整报告: {f_html}")
-        # 微信推送: 有信号则推送完整 HTML 报告 (含 TOP 清单在最顶部)
-        try:
-            html = Path(f_html).read_text(encoding='utf-8') if f_html and Path(f_html).exists() else ''
-            if html:
-                now = now_cst()
-                offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
-                            or now.hour > 15 or (now.hour == 15 and now.minute > 30))
-                if offhours and not args.allow_push_offhours:
-                    log(f"非交易时段({now:%H:%M} 北京), 跳过微信推送(避免盘后延迟运行误推)")
-                else:
-                    if PN.push_html(f"盘中信号 {now_cst().date()} · 新增 {len(fresh)} 只", html):
-                        st['last_push_date'] = now.strftime('%Y-%m-%d')
-                        save_state(st)
-        except Exception as e:
-            log(f"推送异常(不影响选股): {e}")
+    # 2) 个股观察池推送 (复用原 top5 报告表格格式, 每周期有候选才推)
+    if not offhours and sigs:
+        push_observation_pool(sigs, market_msg, now, st, market_blocked)
+    elif not sigs:
+        log("观察池为空，本轮静默（推空）。")
+    if sigs:
+        f_top5, f_html = save_out(sigs, now_cst().strftime('%H:%M'), market_msg, args)
+        if f_top5:
+            ad = pd.read_csv(f_top5)
+            ad['code'] = ad['code'].astype(str).str.zfill(6)
+            cols = ['bar_time', 'name', 'code', 'close', 'decline_5d_pct', 'vol_ratio']
+            names = ['触发bar', '名称', '代码', '信号价', '近5日跌', '量比']
+            if 'ytd_same' in ad.columns:
+                cols.append('ytd_same'); names.append('同期放量')
+            cols += ['calm3_maxmin', 'burst3']; names += ['平静度', '爆发']
+            show = ad[cols].copy(); show.columns = names
+            show.insert(0, '#', range(1, len(show) + 1))
+            yv = ad['vol_ratio'].fillna(0)
+            show['强度'] = yv.apply(lambda v: '★★★' if v >= SAME_VOL_STRONG
+                                    else '★★' if v >= SAME_VOL_MID else '★').values
+            if 'chase_pct' in ad.columns:
+                show['现价偏离'] = ad['chase_pct'].apply(
+                    lambda v: f'{v:+.1f}% 慎追' if pd.notna(v) and v >= CHASE_LIMIT_PCT
+                    else (f'{v:+.1f}%' if pd.notna(v) else '—')).values
+            print("\n" + "=" * 96)
+            print(f"  观察池/候选 {len(ad)} 只（按量比降序）" + ("  [大盘不交易·仅供参考]" if market_blocked else ""))
+            print(f"  同期放量门槛 {SAME_VOL_MIN}×｜不足 {TOP_N} 只即视为不达标，不要凑数")
+            print("=" * 96)
+            print(show.to_string(index=False))
+            print()
+            log(f"TOP{TOP_N} 清单: {f_top5}")
+            log(f"完整报告: {f_html}")
     else:
-        log("本轮无新增信号（大盘信号/跟踪已按规则推送）。")
+        log("本轮无候选/信号，观察池为空（推空）。")
     log(f"耗时 {time.time()-t0:.0f}s")
 
 
