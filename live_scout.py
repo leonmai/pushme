@@ -446,8 +446,11 @@ def push_market_signal(market_msg: str, now, st=None) -> bool:
     """大盘信号单独推送: 每个扫描周期(交易时段)推一条短消息, 让用户掌握市场是否可交易。"""
     try:
         title = f"大盘信号 {now.date()} {now:%H:%M}"
+        hint = ''
+        if '不交易' in market_msg or '下方' in market_msg:
+            hint = '\n技术达标个股仍会进入观察池推送，供你自行决定是否关注（不推送买入建议）。'
         text = (f"{market_msg}\n\n"
-                f"每半小时播报一次，让你随时知道市场是否可交易。")
+                f"每半小时播报一次，让你随时知道市场是否可交易。{hint}")
         if PN.push_text(title, text):
             log(f"已推送大盘信号: {market_msg}")
             return True
@@ -482,19 +485,21 @@ def push_tracking(st) -> int:
     for code, info in tracked.items():
         cur, pre = sina_stock_now(str(code))
         ap = info.get('added_price')
+        tag = ' [观察]' if info.get('obs') else ''
+        nm = (info.get('name', '') or '') + tag
         if cur is None or not ap:
-            rows.append((info.get('name', ''), code, ap, None, None))
+            rows.append((nm, code, ap, None, None))
             continue
         chg = (cur - ap) / ap * 100.0
-        rows.append((info.get('name', ''), code, ap, cur, chg))
+        rows.append((nm, code, ap, cur, chg))
     rows.sort(key=lambda r: (r[4] if r[4] is not None else -1e9), reverse=True)
-    lines = [f"个股跟踪 {len(tracked)} 只（信号后表现）:"]
+    lines = [f"个股观察池 {len(tracked)} 只（技术达标，仅供参考）:"]
     for name, code, ap, cur, chg in rows:
         if cur is None:
             lines.append(f"  {name}({code}) 现价获取失败")
         else:
             arrow = '▲' if chg >= 0 else '▼'
-            lines.append(f"  {name}({code}) 信号{ap}→现{cur:.2f} {arrow}{chg:+.1f}%")
+            lines.append(f"  {name}({code}) 参考{ap}→现{cur:.2f} {arrow}{chg:+.1f}%")
     text = "\n".join(lines)
     try:
         if PN.push_text(f"个股跟踪 {now.date()} {now:%H:%M}", text):
@@ -522,15 +527,15 @@ def scan(args):
 
     # 1) 大盘择时
     market_msg = '未启用大盘择时'
+    market_blocked = False
     if (MA20_FILTER or args.market_filter) and not args.no_market_filter:
         ok, msg = market_ok()
         log(f"大盘择时: {msg}")
         market_msg = msg
         if not ok:
-            log("!! 大盘在 MA20 下方 → 按规则今日不出信号 (熊市不开仓)")
-            st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
-            save_state(st)
-            return [], msg
+            market_blocked = True
+            log("!! 大盘在 MA20 下方 → 按规则今日不出买入信号 (熊市不开仓)")
+            log("   但技术达标候选仍会进入观察池供你自行观察, 不推送买入建议。")
     else:
         log("大盘择时: 已关闭")
 
@@ -653,6 +658,8 @@ def scan(args):
             log(f"  scan 阶段剔除科创板 {before - len(sigs)} 只")
     if not sigs:
         log("本轮无个股触发信号。")
+        st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
+        save_state(st)
         return [], market_msg
 
     # 6) 分级 + 按「同期放量倍数」排序
@@ -692,19 +699,26 @@ def scan(args):
             continue
         fresh.append(s)
         pushed.add(key)
-    # 跟踪池: 新信号自动进池 (setdefault 保留首次信号价, 不覆盖)
+    # 观察池: 技术达标候选自动进池 (setdefault 保留首次纳入价, 不覆盖)
     tracked = st.setdefault('tracked', {})
-    for s in fresh:
+    # 大盘破位日: 把本轮技术达标候选 sigs 全部纳入观察池 (不推买入建议, 仅供自行观察)
+    # 正常日:    仅本轮新信号 fresh 进池
+    _pool_src = sigs if market_blocked else fresh
+    for s in _pool_src:
         tracked.setdefault(str(s['code']), {
             'name': s.get('name', ''),
             'added': now.strftime('%Y-%m-%d %H:%M'),
             'added_price': s.get('close'),
             'added_bar': s.get('bar_time'),
+            'obs': market_blocked,
         })
     st['pushed'] = sorted(pushed)[-3000:]
     st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
     save_state(st)
-    log(f"触发 {len(sigs)} 个信号 (含已推送 {repeat} 个), 本轮新增 {len(fresh)} 个")
+    log(f"触发 {len(sigs)} 个信号 (含已推送 {repeat} 个), 本轮新增 {len(fresh)} 个; 观察池纳入 {len(_pool_src)} 只")
+    # 大盘破位: 不推买入信号, 但候选已进观察池供自行观察
+    if market_blocked:
+        return [], market_msg
     return fresh, market_msg
 
 
