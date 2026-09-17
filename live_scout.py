@@ -267,6 +267,26 @@ def sina_index_now() -> float | None:
     return None
 
 
+def sina_stock_now(code: str):
+    """单只股票实时价 (新浪 hq). 返回 (当前价, 昨收), 失败返回 (None, None)."""
+    if not code:
+        return None, None
+    prefix = 'sh' if str(code)[0] in '68' else ('sz' if str(code)[0] in '03' else 'bj')
+    try:
+        r = requests.get(SINA_HQ + prefix + str(code), headers=HDR, timeout=10)
+        m = re.search(r'"([^"]+)"', r.text)
+        if m:
+            parts = m.group(1).split(',')
+            if len(parts) >= 4:
+                cur = float(parts[3])
+                pre = float(parts[2]) if parts[2] not in ('', '0') else None
+                if cur > 0:
+                    return cur, pre
+    except Exception:
+        pass
+    return None, None
+
+
 def market_ok() -> tuple[bool, str]:
     """大盘择时: 上证指数当前点位 vs MA20 (必须用实时点位, 日K源只到昨日会误判)"""
     closes = []
@@ -420,6 +440,69 @@ def push_no_signal_heartbeat(reason: str, now, st=None) -> bool:
     except Exception as e:
         log(f"无信号心跳推送异常(忽略): {e}")
     return False
+
+
+def push_market_signal(market_msg: str, now, st=None) -> bool:
+    """大盘信号单独推送: 每个扫描周期(交易时段)推一条短消息, 让用户掌握市场是否可交易。"""
+    try:
+        title = f"大盘信号 {now.date()} {now:%H:%M}"
+        text = (f"{market_msg}\n\n"
+                f"每半小时播报一次，让你随时知道市场是否可交易。")
+        if PN.push_text(title, text):
+            log(f"已推送大盘信号: {market_msg}")
+            return True
+    except Exception as e:
+        log(f"大盘信号推送异常(忽略): {e}")
+    return False
+
+
+def push_tracking(st) -> int:
+    """个股跟踪推送: 拉取跟踪池实时价, 计算相对信号价的涨跌幅; 有股才推, 返回推送只数(0=无股不推)。"""
+    tracked = st.get('tracked', {})
+    if not tracked:
+        return 0
+    now = now_cst()
+    # 清理 20 天前的旧项 + 控制池上限 40 (每周期执行, 即使熊市无信号也清理)
+    cutoff = now - timedelta(days=20)
+    for c, info in list(tracked.items()):
+        ad = (info.get('added') or '')[:10]
+        try:
+            if ad and datetime.strptime(ad, '%Y-%m-%d') < cutoff:
+                del tracked[c]
+        except Exception:
+            pass
+    if len(tracked) > 40:
+        keep = sorted(tracked.items(), key=lambda kv: kv[1].get('added', ''))[-40:]
+        tracked.clear()
+        for c, info in keep:
+            tracked[c] = info
+        st['tracked'] = tracked
+        save_state(st)
+    rows = []
+    for code, info in tracked.items():
+        cur, pre = sina_stock_now(str(code))
+        ap = info.get('added_price')
+        if cur is None or not ap:
+            rows.append((info.get('name', ''), code, ap, None, None))
+            continue
+        chg = (cur - ap) / ap * 100.0
+        rows.append((info.get('name', ''), code, ap, cur, chg))
+    rows.sort(key=lambda r: (r[4] if r[4] is not None else -1e9), reverse=True)
+    lines = [f"个股跟踪 {len(tracked)} 只（信号后表现）:"]
+    for name, code, ap, cur, chg in rows:
+        if cur is None:
+            lines.append(f"  {name}({code}) 现价获取失败")
+        else:
+            arrow = '▲' if chg >= 0 else '▼'
+            lines.append(f"  {name}({code}) 信号{ap}→现{cur:.2f} {arrow}{chg:+.1f}%")
+    text = "\n".join(lines)
+    try:
+        if PN.push_text(f"个股跟踪 {now.date()} {now:%H:%M}", text):
+            log(f"已推送跟踪: {len(tracked)} 只")
+            return len(tracked)
+    except Exception as e:
+        log(f"跟踪推送异常(忽略): {e}")
+    return 0
 
 
 # ---------- 主流程 ----------
@@ -609,6 +692,15 @@ def scan(args):
             continue
         fresh.append(s)
         pushed.add(key)
+    # 跟踪池: 新信号自动进池 (setdefault 保留首次信号价, 不覆盖)
+    tracked = st.setdefault('tracked', {})
+    for s in fresh:
+        tracked.setdefault(str(s['code']), {
+            'name': s.get('name', ''),
+            'added': now.strftime('%Y-%m-%d %H:%M'),
+            'added_price': s.get('close'),
+            'added_bar': s.get('bar_time'),
+        })
     st['pushed'] = sorted(pushed)[-3000:]
     st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
     save_state(st)
@@ -821,6 +913,15 @@ def main():
     t0 = time.time()
     fresh, market_msg = scan(args)
     st = load_state()                     # 供有信号/无信号两分支共享 (记录 last_push_date 等)
+    now = now_cst()
+    offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
+                or now.hour > 15 or (now.hour == 15 and now.minute > 30))
+    # 1) 大盘信号单独推送 (每周期, 交易时段)
+    if not offhours:
+        push_market_signal(market_msg, now, st)
+    # 2) 个股跟踪推送 (有股才推, 交易时段)
+    if not offhours:
+        push_tracking(st)
     if fresh:
         f_top5, f_html = save_out(fresh, now_cst().strftime('%H:%M'), market_msg, args)
         today = now_cst().date().strftime('%Y-%m-%d')
@@ -871,12 +972,7 @@ def main():
         except Exception as e:
             log(f"推送异常(不影响选股): {e}")
     else:
-        # 无信号: 每个扫描周期(每半小时, 交易时段内)都推送一次"心跳", 让用户知道任务仍在运行
-        now = now_cst()
-        if push_no_signal_heartbeat(market_msg, now, st):
-            log("本轮无新增信号 → 已推送'无信号'心跳(每半小时一次)")
-        else:
-            log("本轮无新增信号（非交易时段，静默）。")
+        log("本轮无新增信号（大盘信号/跟踪已按规则推送）。")
     log(f"耗时 {time.time()-t0:.0f}s")
 
 
