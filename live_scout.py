@@ -856,7 +856,7 @@ body{{font-family:"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1f2430;
 .wrap{{max-width:1100px;margin:0 auto}}
 h1{{font-size:20px}} .meta{{color:#8a93a6;font-size:13px;margin-bottom:14px}}
 table{{border-collapse:collapse;width:100%;background:#fff;font-size:13px}}
-th,td{{border:1px solid #e6e8ef;padding:7px 24px;text-align:center}}
+th,td{{border:1px solid #e6e8ef;padding:7px 72px;text-align:center}}
 th{{background:#f0f2f7}} td.num{{font-variant-numeric:tabular-nums}}
 .sub{{color:#a0a6b5;font-size:11px}}
 .g{{display:inline-block;padding:2px 8px;border-radius:10px;color:#fff;font-weight:700;font-size:12px}}
