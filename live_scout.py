@@ -909,6 +909,18 @@ def main():
                     help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
     args = ap.parse_args()
 
+    # 错开触发时间: 半点/整点触发后, 等15分钟BAR走完再扫 (延后约5分钟)
+    # 放在最前面, 使后续的 scan / 大盘信号 / 跟踪都在 BAR 走完之后执行
+    _n0 = now_cst()
+    _in_trading = (9 <= _n0.hour < 15) or (_n0.hour == 15 and _n0.minute <= 5)
+    if _in_trading:
+        _base = (_n0.minute // 30) * 30          # 0 或 30
+        _target = _n0.replace(minute=_base, second=0, microsecond=0) + timedelta(minutes=5)
+        if _n0 < _target:
+            _wait = int((_target - _n0).total_seconds())
+            log(f"触发于 {_n0.strftime('%H:%M')}, 延后 {_wait}s 至 {_target.strftime('%H:%M')} 待15分钟BAR走完再扫描")
+            time.sleep(min(_wait, 360))          # 最多睡6分钟, 防 runner 超时
+
     log("== 盘中实时盯盘 v7 ==")
     t0 = time.time()
     fresh, market_msg = scan(args)
