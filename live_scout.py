@@ -853,10 +853,10 @@ def build_live_html(df: pd.DataFrame, snap_time: str, market_msg: str = '', obs:
     return f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
 <title>盘中信号 {now_cst().date()} </title><style>
 body{{font-family:"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1f2430;margin:0;padding:24px}}
-.wrap{{max-width:none;margin:0 auto;overflow-x:auto}}
+.wrap{{max-width:1100px;margin:0 auto;overflow-x:auto}}
 h1{{font-size:20px}} .meta{{color:#8a93a6;font-size:13px;margin-bottom:14px}}
-table{{border-collapse:collapse;width:auto;min-width:100%;background:#fff;font-size:13px}}
-th,td{{border:1px solid #e6e8ef;padding:7px 72px;text-align:center;white-space:nowrap}}
+table{{border-collapse:collapse;width:100%;background:#fff;font-size:13px}}
+th,td{{border:1px solid #e6e8ef;padding:4px 12px;text-align:center;white-space:nowrap;line-height:1.5}}
 th{{background:#f0f2f7}} td.num{{font-variant-numeric:tabular-nums}}
 .sub{{color:#a0a6b5;font-size:11px}}
 .g{{display:inline-block;padding:2px 8px;border-radius:10px;color:#fff;font-weight:700;font-size:12px}}
