@@ -72,6 +72,7 @@ DECLINE_A = -3.0            # A级: 近5日累计跌幅 <= -3%
 DECLINE_B = -1.0            # B级: -3% < 跌幅 <= -1%
 MIN_TURNOVER = 3_000_000    # 预筛最小成交额
 TOP_N = 5                   # 每日最多关注/建仓只数 (按同期放量降序)
+OBS_PUSH_CAP = 5            # 观察池微信推送上限: 只推量比最高的 Top5 (即用户要的「观察池」格式, 绝不推全量)
 POOL_SIZE = 600             # 候选池 (按成交额)
 
 # 2026-09-09 (v9): 同期放量门槛 0.9 -> 1.5, 并引入强度分级。
@@ -484,11 +485,18 @@ def push_market_signal(market_msg: str, now, st=None, close_note: bool = False) 
 
 
 def push_observation_pool(sigs, market_msg, now, st, market_blocked) -> int:
-    """个股观察池推送: 复用原 top5 信号报告的表格格式(HTML), 每周期有候选即推。
-    大盘不交易时 obs=True, 标题/提示改为'观察池·仅供参考', 不推送买入建议。"""
+    """个股观察池推送: 复用原 top5 信号报告的表格格式(HTML), 每周期有候选即推 Top5 (量比最高前 5 只)。
+    大盘不交易时 obs=True, 标题/提示改为'观察池·仅供参考', 不推送买入建议。
+    HTML 推送失败自动降级纯文本。绝不推送全量候选 (避免 pushplus code=999 体积超限)。"""
     if not sigs:
         return 0
-    df = pd.DataFrame(sigs)
+    # 按量比降序取前 5 只 (最接近触发, 即用户要的 Top5 观察池; 绝不推全量)
+    def _vr(r):
+        v = r.get('vol_ratio')
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else -1.0
+    push_rows = sorted(sigs, key=_vr, reverse=True)[:OBS_PUSH_CAP]
+
+    df = pd.DataFrame(push_rows)
     df['code'] = df['code'].astype(str).str.zfill(6)
     # 实时价核对「现价 vs 信号价」偏离(同 save_out, 仅用于展示'现价偏离'列)
     try:
@@ -516,14 +524,41 @@ def push_observation_pool(sigs, market_msg, now, st, market_blocked) -> int:
         df['chase_pct'] = None
     html = build_live_html(df, now.strftime('%H:%M'), market_msg, obs=market_blocked)
     title = ("个股观察池 · 大盘不交易（仅供参考）" if market_blocked
-             else f"盘中信号 {now.date()} · 候选 {len(sigs)} 只")
+             else f"盘中信号 {now.date()} · 候选 Top{OBS_PUSH_CAP}")
     try:
         if PN.push_html(title, html):
-            log(f"已推送观察池: {len(sigs)} 只" + (" (大盘不交易·仅供参考)" if market_blocked else ""))
-            return len(sigs)
+            log(f"已推送观察池 Top{OBS_PUSH_CAP}" + (" (大盘不交易·仅供参考)" if market_blocked else ""))
+            return len(push_rows)
     except Exception as e:
-        log(f"观察池推送异常(忽略): {e}")
+        log(f"观察池 HTML 推送异常: {e}")
+    # 兜底: 降级为纯文本推送 (pushplus txt 模板体积上限更宽)
+    try:
+        text = _obs_text(push_rows, title, market_blocked)
+        if PN.push_text(title, text):
+            log(f"已推送观察池(纯文本兜底) Top{OBS_PUSH_CAP}")
+            return len(push_rows)
+    except Exception as e:
+        log(f"观察池纯文本推送异常: {e}")
+    log(f"!! 观察池推送失败 (Top{OBS_PUSH_CAP})")
     return 0
+
+
+def _obs_text(rows, title: str, market_blocked: bool) -> str:
+    """观察池纯文本表格 (HTML 推送失败时的兜底)。"""
+    lines = [title, ""]
+    if market_blocked:
+        lines.append("大盘不交易 · 仅供参考, 不推送买入建议")
+        lines.append("")
+    lines.append(f"{'#':>2} {'名称':<8} {'代码':<8} {'信号价':>9} {'近5日跌':>7} {'量比':>5} {'同期':>5}")
+    for i, r in enumerate(rows, 1):
+        lines.append(
+            f"{i:>2} {str(r.get('name',''))[:8]:<8} "
+            f"{str(r.get('code','')):>6} "
+            f"{r.get('close',0):>9} {r.get('decline_5d_pct',0):>7} "
+            f"{r.get('vol_ratio',0):>5} {r.get('ytd_same',0):>5}")
+    lines.append("")
+    lines.append("（量比最高的 Top5 候选, 完整指标见网页推送）")
+    return "\n".join(lines)
 
 
 # ---------- 主流程 ----------
