@@ -321,90 +321,111 @@ def last_completed_bar(now: datetime) -> datetime | None:
 
 
 # ---------- 信号 ----------
-def find_all_signal_bars(df15: pd.DataFrame, target_day: date) -> list[dict]:
-    """当日所有满足条件的 15min bar (盘中可能多根触发)
+def _compute_bar_metrics(bars, prev_bars, i, ytd) -> dict | None:
+    """计算第 i 根 15min bar 的全部量价指标; 防御性检查不通过返回 None。
+    不含严格过滤器 —— find_all_signal_bars(取严格信号) 与 best_candidate_bar(取观察池代表bar) 共用。"""
+    cur, prev = bars.iloc[i], bars.iloc[i - 1]
+    if bool(cur.get('_ex', False)):
+        return None
+    try:
+        op, cl = float(cur['open']), float(cur['close'])
+        cv, pv = float(cur['volume']), float(prev['volume'])
+    except Exception:
+        return None
+    # 防御: 当天最新 bar 数据未回填时 OHLC 是 nan, 跳过 (等下次扫描)
+    if not (math.isfinite(op) and math.isfinite(cl)
+            and math.isfinite(cv) and math.isfinite(pv)):
+        return None
+    if op <= 0 or pv <= 0 or cv <= 0:
+        return None
+    chg = (cl - op) / op * 100
+    # 量比基线: 用前3根均值, 抵御新浪偶发废bar(单根 V=100 等异常小量)
+    baseline = float(bars['volume'].iloc[max(0, i - 3):i].mean())
+    if baseline <= 0:
+        return None
+    vr = cv / baseline
+    # 同期放量倍数: 昨日 bar 数不足(停牌/新股)时不做, 避免分母失真造成假信号
+    if len(prev_bars) < i + 1:
+        return None
+    today_cum = float(bars['volume'].iloc[:i + 1].sum())
+    prev_cum = float(prev_bars['volume'].iloc[:i + 1].sum())
+    if prev_cum <= 0:
+        return None
+    ytd_same = today_cum / prev_cum
+    # 平静度 (用户偏好形态: 前面量能均匀且低迷, 信号根突然放大)
+    # calm3_maxmin = 前3根量 最大/最小 (越小越均匀); burst3 = 信号根/前3根均量
+    # 仅作标注展示, 不作为过滤 (三月回测: 过滤会损失 27%~53% 收益)
+    calm3, burst3 = float('nan'), float('nan')
+    if i >= 3:
+        vs = []
+        for j in range(i - 3, i):
+            try:
+                vs.append(float(bars.iloc[j]['volume']))
+            except Exception:
+                vs = []
+                break
+        if len(vs) == 3 and min(vs) > 0:
+            av = sum(vs) / 3
+            calm3, burst3 = max(vs) / min(vs), cv / av
+    return {'signal_time': cur['day'], 'close': cl, 'change_pct': chg,
+            'vol_ratio': vr, 'signal_bar_vol': cv, 'prev_bar_vol': pv,
+            'ytd_vol_ratio': ytd, 'ytd_same': ytd_same,
+            'calm3_maxmin': calm3, 'burst3': burst3,
+            'triggered': (S.INTRADAY_PCT_MIN <= chg <= S.INTRADAY_PCT_MAX
+                          and vr >= S.VOL_MULT and ytd_same >= SAME_VOL_MIN)}
 
-    重要修正 (2026-09-08 实盘发现): 被排除的 bar (11:30 / 13:15 / 15:00)
-    只**不作为信号根**, 但仍要作为「前一根」「前3根」的比较基准.
-    原实现先过滤再取 prev, 导致 13:30 的 bar 跨午休与 11:15 比较 ——
-    张江高科量比被算成 30.40×, 真实(对 13:15)仅 1.97×, 属严重失真."""
+
+def _prepare_days(df15, target_day):
+    """取当日/前一日 bar 序列与 全天口径 today/prev 量比 ytd; 非法返回 None。"""
     df = df15.reset_index(drop=True)
     df['_ex'] = df['day'].apply(S.is_excluded_bar)
     days = sorted(df['day'].dt.date.unique())
     if target_day not in days:
-        return []
+        return None
     prev_days = [d for d in days if d < target_day]
     if not prev_days:
-        return []
+        return None
     prev_day = prev_days[-1]
     dv = df.groupby(df['day'].dt.date)['volume'].sum()
     yv = float(dv.get(prev_day, 0))
     tv = float(dv.get(target_day, 0))
     if yv <= 0:
-        return []
+        return None
     ytd = tv / yv          # 全天口径: 盘中 tv 只含已走完的 bar, 天然偏低, 仅作展示
-    # 同期口径 (v8 核心修正): 今日截至该 bar 的累计量 / 昨日截至同一 bar 序号的累计量
-    # 原实现用「今日已实现量 / 昨日全天量」并卡 >=0.9 —— 13:30 时今日只走了约 55%,
-    # 该门槛盘中几乎不可能达到, 会导致 13:30 单次扫描永远无信号。
     prev_bars = df[df['day'].dt.date == prev_day].reset_index(drop=True)
     bars = df[df['day'].dt.date == target_day].reset_index(drop=True)
+    return bars, prev_bars, ytd
+
+
+def find_all_signal_bars(df15: pd.DataFrame, target_day: date) -> list[dict]:
+    """当日所有严格触发买入信号的 15min bar (盘中可能多根触发)。"""
+    prep = _prepare_days(df15, target_day)
+    if prep is None:
+        return []
+    bars, prev_bars, ytd = prep
     out = []
     for i in range(1, len(bars)):
-        cur, prev = bars.iloc[i], bars.iloc[i - 1]
-        if bool(cur.get('_ex', False)):
-            continue        # 被排除的 bar 不发信号, 但仍作为下面各 bar 的比较基准
-        try:
-            op, cl = float(cur['open']), float(cur['close'])
-            cv, pv = float(cur['volume']), float(prev['volume'])
-        except Exception:
-            continue
-        # 防御: 当天最新 bar 数据未回填时 OHLC 是 nan, 跳过 (等下次扫描)
-        if not (math.isfinite(op) and math.isfinite(cl)
-                and math.isfinite(cv) and math.isfinite(pv)):
-            continue
-        if op <= 0 or pv <= 0 or cv <= 0:
-            continue
-        chg = (cl - op) / op * 100
-        # 量比基线: 用前3根均值, 抵御新浪偶发废bar(单根 V=100 等异常小量)
-        #   单根 prev 对比会被这种 glitch 放大成假放量(如 1457x), 均值平滑后正确识别
-        baseline = float(bars['volume'].iloc[max(0, i - 3):i].mean())
-        if baseline <= 0:
-            continue
-        vr = cv / baseline
-        if not (S.INTRADAY_PCT_MIN <= chg <= S.INTRADAY_PCT_MAX):
-            continue
-        if vr < S.VOL_MULT:
-            continue
-        # 同期放量倍数: 昨日 bar 数不足(停牌/新股)时不做, 避免分母失真造成假信号
-        if len(prev_bars) < i + 1:
-            continue
-        today_cum = float(bars['volume'].iloc[:i + 1].sum())
-        prev_cum = float(prev_bars['volume'].iloc[:i + 1].sum())
-        if prev_cum <= 0:
-            continue
-        ytd_same = today_cum / prev_cum
-        if ytd_same < SAME_VOL_MIN:
-            continue
-        # 平静度 (用户偏好形态: 前面量能均匀且低迷, 信号根突然放大)
-        # calm3_maxmin = 前3根量 最大/最小 (越小越均匀); burst3 = 信号根/前3根均量
-        # 仅作标注展示, 不作为过滤 (三月回测: 过滤会损失 27%~53% 收益)
-        calm3, burst3 = float('nan'), float('nan')
-        if i >= 3:
-            vs = []
-            for j in range(i - 3, i):
-                try:
-                    vs.append(float(bars.iloc[j]['volume']))
-                except Exception:
-                    vs = []
-                    break
-            if len(vs) == 3 and min(vs) > 0:
-                av = sum(vs) / 3
-                calm3, burst3 = max(vs) / min(vs), cv / av
-        out.append({'signal_time': cur['day'], 'close': cl, 'change_pct': chg,
-                    'vol_ratio': vr, 'signal_bar_vol': cv, 'prev_bar_vol': pv,
-                    'ytd_vol_ratio': ytd, 'ytd_same': ytd_same,
-                    'calm3_maxmin': calm3, 'burst3': burst3})
+        m = _compute_bar_metrics(bars, prev_bars, i, ytd)
+        if m is not None and m['triggered']:
+            out.append(m)
     return out
+
+
+def best_candidate_bar(df15: pd.DataFrame, target_day: date) -> dict | None:
+    """观察池代表 bar: 取当日 vol_ratio 最高的那根(最接近触发信号的技术状态)。
+    即便未触发严格信号, 也给出最接近信号的技术指标, 供观察池(watchlist)展示。"""
+    prep = _prepare_days(df15, target_day)
+    if prep is None:
+        return None
+    bars, prev_bars, ytd = prep
+    best = None
+    for i in range(1, len(bars)):
+        m = _compute_bar_metrics(bars, prev_bars, i, ytd)
+        if m is None:
+            continue
+        if best is None or m['vol_ratio'] > best['vol_ratio']:
+            best = m
+    return best
 
 
 def load_state() -> dict:
@@ -506,6 +527,38 @@ def push_observation_pool(sigs, market_msg, now, st, market_blocked) -> int:
 
 
 # ---------- 主流程 ----------
+def _make_row(m, code, name, decline_pct, day_pct, day_key):
+    """把指标 dict(或 None) 拼成观察池/信号行所需的完整 dict (grade 由跌幅定级)。"""
+    grade = 'A' if decline_pct <= DECLINE_A else 'B'
+
+    def r2(x):
+        try:
+            return round(float(x), 2)
+        except Exception:
+            return None
+
+    base = {'code': code, 'name': name, 'date': day_key, 'grade': grade,
+            'decline_5d_pct': decline_pct, 'day_pct': day_pct,
+            'calm3_maxmin': None, 'burst3': None}
+    if m is None:
+        base.update({'bar_time': '', 'close': float('nan'),
+                     'bar_change_pct': float('nan'), 'vol_ratio': float('nan'),
+                     'signal_bar_vol': 0, 'prev_bar_vol': 0,
+                     'ytd_vol_ratio': float('nan'), 'ytd_same': float('nan')})
+        return base
+    base.update({'bar_time': m['signal_time'].strftime('%Y-%m-%d %H:%M'),
+                 'close': round(float(m['close']), 3),
+                 'bar_change_pct': r2(m['change_pct']),
+                 'vol_ratio': r2(m['vol_ratio']),
+                 'signal_bar_vol': int(m['signal_bar_vol']),
+                 'prev_bar_vol': int(m['prev_bar_vol']),
+                 'ytd_vol_ratio': r2(m['ytd_vol_ratio']),
+                 'ytd_same': r2(m['ytd_same']),
+                 'calm3_maxmin': r2(m.get('calm3_maxmin', float('nan'))),
+                 'burst3': r2(m.get('burst3', float('nan')))})
+    return base
+
+
 def scan(args):
     now = now_cst()
     today = now.date()
@@ -516,7 +569,7 @@ def scan(args):
     bar = last_completed_bar(now)
     if bar is None and not args.force:
         log("当前不在有效 15min bar 时段 (或非交易时间), 退出。")
-        return [], "未检查(非交易时段)"
+        return [], [], "未检查(非交易时段)", False
     if bar is not None:
         log(f"最新已完成 bar: {bar.strftime('%H:%M')}")
 
@@ -611,51 +664,56 @@ def scan(args):
         name_map.update(fetch_names(_missing))
 
     if not cands:
-        return [], market_msg
+        return [], [], market_msg, market_blocked
 
-    # 5) 拉 15min 判信号
+    # 5) 拉 15min: 既判严格买入信号(sigs), 也生成观察池候选行(cand_rows)
     sigs = []
+    cand_rows = []
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = {ex.submit(fetch_15min_live, c): c for c, _ in cands}
         for f in tqdm_as_completed(futs):
             c = futs[f]
+            decl = dict(cands)[c]
+            dpct = round(pct_map.get(c, 0.0), 2)
+            nm = name_map.get(c, c)
             try:
                 df15 = f.result()
             except Exception:
-                continue
+                df15 = pd.DataFrame()
             if df15.empty:
+                log(f"  {c} 无15min数据, 不列入观察池")
                 continue
+            # 严格买入信号
             for sg in find_all_signal_bars(df15, today):
-                sigs.append({
-                    'code': c, 'name': name_map.get(c, c),
-                    'date': day_key,
-                    'bar_time': sg['signal_time'].strftime('%Y-%m-%d %H:%M'),
-                    'close': round(sg['close'], 3),
-                    'bar_change_pct': round(sg['change_pct'], 2),
-                    'vol_ratio': round(sg['vol_ratio'], 2),
-                    'signal_bar_vol': int(sg['signal_bar_vol']),
-                    'prev_bar_vol': int(sg['prev_bar_vol']),
-                    'ytd_vol_ratio': round(sg['ytd_vol_ratio'], 2),
-                    'ytd_same': round(sg['ytd_same'], 2),
-                    'decline_5d_pct': dict(cands)[c],
-                    'day_pct': round(pct_map.get(c, 0.0), 2),
-                    'calm3_maxmin': (round(sg['calm3_maxmin'], 2)
-                                     if math.isfinite(sg.get('calm3_maxmin', float('nan')))
-                                     else None),
-                    'burst3': (round(sg['burst3'], 2)
-                               if math.isfinite(sg.get('burst3', float('nan'))) else None),
-                })
-    # 科创板(688xxx)兜底: 万一候选池漏网, 生成信号前再拦一道
+                sigs.append(_make_row(sg, c, nm, decl, dpct, day_key))
+            # 观察池代表 bar (vol_ratio 最高, 最接近触发); 无有效 bar 则不列入
+            bm = best_candidate_bar(df15, today)
+            if bm is None:
+                log(f"  {c} 15min无有效bar, 不列入观察池")
+                continue
+            cand_rows.append(_make_row(bm, c, nm, decl, dpct, day_key))
+    # 科创板(688xxx)兜底: 候选池与信号都拦
     if EXCLUDE_STAR_MARKET and not getattr(args, 'allow_star', False):
         before = len(sigs)
         sigs = [s for s in sigs if not str(s['code']).startswith('688')]
         if len(sigs) != before:
-            log(f"  scan 阶段剔除科创板 {before - len(sigs)} 只")
+            log(f"  scan 阶段剔除科创板信号 {before - len(sigs)} 只")
+        before_c = len(cand_rows)
+        cand_rows = [r for r in cand_rows if not str(r['code']).startswith('688')]
+        if len(cand_rows) != before_c:
+            log(f"  scan 阶段剔除科创板候选 {before_c - len(cand_rows)} 只")
+    # 观察池按 vol_ratio 降序 (最接近信号的排前)
+    def _vr(r):
+        v = r.get('vol_ratio')
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else -1.0
+    cand_rows_sorted = sorted(cand_rows, key=_vr, reverse=True)
+    log(f"观察池候选 {len(cand_rows_sorted)} 只 (含未触发严格信号的技术达标股)")
     if not sigs:
-        log("本轮无个股触发信号。")
+        log("本轮无个股触发严格买入信号。")
         st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
         save_state(st)
-        return [], market_msg, False
+        # 技术达标候选仍在 → 观察池照推; 大盘不交易时由 main 标"仅供参考"
+        return cand_rows_sorted, [], market_msg, market_blocked
 
     # 6) 分级 + 按「同期放量倍数」排序
     #    v8 (2026-09-09): 24 个月 / 11469 条信号回测, 各排序口径下 Top5 组合:
@@ -699,10 +757,10 @@ def scan(args):
     st['last_run'] = now.strftime('%Y-%m-%d %H:%M')
     save_state(st)
     log(f"触发 {len(sigs)} 个信号 (含已推送 {repeat} 个), 本轮新增 {len(fresh)} 个")
-    # 大盘破位: 不推买入信号, 但候选(sigs)仍返回, 由 main 作为观察池推送供自行观察
+    # 观察池(cand_rows_sorted)每周期都推; 严格买入信号(sigs/fresh)仅在有触发时由 main 推
     if market_blocked:
-        return sigs, market_msg, True
-    return fresh, market_msg, False
+        return cand_rows_sorted, sigs, market_msg, True
+    return cand_rows_sorted, fresh, market_msg, False
 
 
 def tqdm_as_completed(futs):
@@ -927,7 +985,7 @@ def main():
 
     log("== 盘中实时盯盘 v7 ==")
     t0 = time.time()
-    sigs, market_msg, market_blocked = scan(args)
+    obs_pool, sigs, market_msg, market_blocked = scan(args)
     st = load_state()                     # 供有信号/无信号两分支共享 (记录 last_push_date 等)
     now = now_cst()
     offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
@@ -937,11 +995,11 @@ def main():
     # 1) 大盘信号单独推送 (每周期, 交易时段; 收盘附近也补一条确认)
     if (not offhours) or close_digest:
         push_market_signal(market_msg, now, st, close_note=close_digest)
-    # 2) 个股观察池推送 (复用原 top5 报告表格格式, 每周期有候选才推)
-    if not offhours and sigs:
-        push_observation_pool(sigs, market_msg, now, st, market_blocked)
-    elif not sigs:
-        log("观察池为空，本轮静默（推空）。")
+    # 2) 个股观察池推送 (每周期有技术达标候选即推; 大盘不交易时标"仅供参考")
+    if not offhours and obs_pool:
+        push_observation_pool(obs_pool, market_msg, now, st, market_blocked)
+    elif not obs_pool:
+        log("观察池为空（无技术达标候选），本轮静默。")
     if sigs:
         f_top5, f_html = save_out(sigs, now_cst().strftime('%H:%M'), market_msg, args)
         if f_top5:
@@ -962,15 +1020,24 @@ def main():
                     lambda v: f'{v:+.1f}% 慎追' if pd.notna(v) and v >= CHASE_LIMIT_PCT
                     else (f'{v:+.1f}%' if pd.notna(v) else '—')).values
             print("\n" + "=" * 96)
-            print(f"  观察池/候选 {len(ad)} 只（按量比降序）" + ("  [大盘不交易·仅供参考]" if market_blocked else ""))
+            print(f"  Top{len(ad)} 严格买入信号（按量比降序）" + ("  [大盘不交易·仅供参考]" if market_blocked else ""))
             print(f"  同期放量门槛 {SAME_VOL_MIN}×｜不足 {TOP_N} 只即视为不达标，不要凑数")
             print("=" * 96)
             print(show.to_string(index=False))
             print()
             log(f"TOP{TOP_N} 清单: {f_top5}")
             log(f"完整报告: {f_html}")
+        # 严格买入信号 → 推送 Top5 报告 (大盘不交易时不推买入建议, 仅观察池标仅供参考)
+        if not market_blocked:
+            try:
+                html = Path(f_html).read_text(encoding='utf-8')
+                title = f"盘中买入信号 {now.date()} · Top{TOP_N}"
+                if PN.push_html(title, html):
+                    log(f"已推送 Top{TOP_N} 买入信号报告")
+            except Exception as e:
+                log(f"Top{TOP_N} 报告推送异常(忽略): {e}")
     else:
-        log("本轮无候选/信号，观察池为空（推空）。")
+        log("本轮无严格买入信号，仅推送技术达标观察池。")
     log(f"耗时 {time.time()-t0:.0f}s")
 
 
