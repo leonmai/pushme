@@ -442,8 +442,9 @@ def push_no_signal_heartbeat(reason: str, now, st=None) -> bool:
     return False
 
 
-def push_market_signal(market_msg: str, now, st=None) -> bool:
-    """大盘信号单独推送: 每个扫描周期(交易时段)推一条短消息, 让用户掌握市场是否可交易。"""
+def push_market_signal(market_msg: str, now, st=None, close_note: bool = False) -> bool:
+    """大盘信号单独推送: 每个扫描周期(交易时段)推一条短消息, 让用户掌握市场是否可交易。
+    close_note=True 时(收盘附近延迟运行)追加"今日系统已自动运行"提示, 避免 GitHub cron 延迟到收盘后静默。"""
     try:
         title = f"大盘信号 {now.date()} {now:%H:%M}"
         hint = ''
@@ -451,8 +452,10 @@ def push_market_signal(market_msg: str, now, st=None) -> bool:
             hint = '\n技术达标个股仍会进入观察池推送，供你自行决定是否关注（不推送买入建议）。'
         text = (f"{market_msg}\n\n"
                 f"每半小时播报一次，让你随时知道市场是否可交易。{hint}")
+        if close_note:
+            text += "\n\n（收盘附近触发 · 今日系统已自动运行，数据截至收盘）"
         if PN.push_text(title, text):
-            log(f"已推送大盘信号: {market_msg}")
+            log(f"已推送大盘信号: {market_msg}" + (" [收盘附近]" if close_note else ""))
             return True
     except Exception as e:
         log(f"大盘信号推送异常(忽略): {e}")
@@ -929,9 +932,11 @@ def main():
     now = now_cst()
     offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
                 or now.hour > 15 or (now.hour == 15 and now.minute > 30))
-    # 1) 大盘信号单独推送 (每周期, 交易时段)
-    if not offhours:
-        push_market_signal(market_msg, now, st)
+    # 收盘附近窗口(15:31-16:30): GitHub 免费 cron 常延迟到收盘后才触发, 此窗口仍补一条"大盘信号+今日已运行"确认, 避免静默
+    close_digest = (now.hour == 15 and now.minute > 30) or (now.hour == 16 and now.minute <= 30)
+    # 1) 大盘信号单独推送 (每周期, 交易时段; 收盘附近也补一条确认)
+    if (not offhours) or close_digest:
+        push_market_signal(market_msg, now, st, close_note=close_digest)
     # 2) 个股观察池推送 (复用原 top5 报告表格格式, 每周期有候选才推)
     if not offhours and sigs:
         push_observation_pool(sigs, market_msg, now, st, market_blocked)
