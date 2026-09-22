@@ -8,3 +8,5 @@ __pycache__/
 # 编辑器
 .vscode/
 .idea/
+# 本地部署用 GitHub PAT (真实凭据, 严禁入库! public 仓库下泄露即公开)
+.gh_fg_token
