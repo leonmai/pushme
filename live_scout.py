@@ -993,39 +993,27 @@ table.t5 td.rk{{font-weight:700;color:#d4352c;font-size:15px}}
 </div></body></html>"""
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--pool', type=int, default=POOL_SIZE)
-    ap.add_argument('--workers', type=int, default=12)
-    ap.add_argument('--force', action='store_true', help='强制扫描(忽略交易时段/复用缓存)')
-    ap.add_argument('--no-market-filter', action='store_true')
-    ap.add_argument('--market-filter', action='store_true',
-                    help='强制启用上证>MA20 择时 (v8 默认已关闭)')
-    ap.add_argument('--top', type=int, default=5, help='提示: 每日建议买入前 N 只')
-    ap.add_argument('--allow-push-offhours', action='store_true',
-                    help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
-    args = ap.parse_args()
+# ---------- 自链路: 一次点火跑完全天 (2026-09-22 修复触发不可靠) ----------
+# 有效扫描档位(各触发器+5min等15min BAR走完): 半点 :35 与 整点 :05
+SCAN_SLOTS_CST = [(9, 35), (10, 5), (10, 35), (11, 5), (11, 35),
+                 (13, 5), (13, 35), (14, 5), (14, 35)]
 
-    # 错开触发时间: 半点/整点触发后, 等15分钟BAR走完再扫 (延后约5分钟)
-    # 放在最前面, 使后续的 scan / 大盘信号 / 跟踪都在 BAR 走完之后执行
-    _n0 = now_cst()
-    _in_trading = (9 <= _n0.hour < 15) or (_n0.hour == 15 and _n0.minute <= 5)
-    if _in_trading:
-        _base = (_n0.minute // 30) * 30          # 0 或 30
-        _target = _n0.replace(minute=_base, second=0, microsecond=0) + timedelta(minutes=5)
-        if _n0 < _target:
-            _wait = int((_target - _n0).total_seconds())
-            log(f"触发于 {_n0.strftime('%H:%M')}, 延后 {_wait}s 至 {_target.strftime('%H:%M')} 待15分钟BAR走完再扫描")
-            time.sleep(min(_wait, 360))          # 最多睡6分钟, 防 runner 超时
 
-    log("== 盘中实时盯盘 v7 ==")
-    t0 = time.time()
+def _today_slots():
+    """返回今日所有扫描档位的 naive-CST datetime 列表。"""
+    d = now_cst()
+    return [d.replace(hour=h, minute=m, second=0, microsecond=0)
+            for h, m in SCAN_SLOTS_CST]
+
+
+def _run_one_slot(args):
+    """执行单次扫描+推送(一个档位)。异常由 main 循环捕获, 不影响全天其他档位。"""
     obs_pool, sigs, market_msg, market_blocked = scan(args)
-    st = load_state()                     # 供有信号/无信号两分支共享 (记录 last_push_date 等)
+    st = load_state()                     # 每档重载, 信号去重 state 跨档持久
     now = now_cst()
     offhours = (now.hour < 9 or (now.hour == 9 and now.minute < 15)
                 or now.hour > 15 or (now.hour == 15 and now.minute > 30))
-    # 收盘附近窗口(15:31-16:30): GitHub 免费 cron 常延迟到收盘后才触发, 此窗口仍补一条"大盘信号+今日已运行"确认, 避免静默
+    # 收盘附近窗口(15:31-16:30): GitHub 免费 cron 常延迟到收盘后才触发, 此窗口仍补一条"大盘信号+今日已运行"确认
     close_digest = (now.hour == 15 and now.minute > 30) or (now.hour == 16 and now.minute <= 30)
     # 1) 大盘信号单独推送 (每周期, 交易时段; 收盘附近也补一条确认)
     if (not offhours) or close_digest:
@@ -1073,7 +1061,54 @@ def main():
                 log(f"Top{TOP_N} 报告推送异常(忽略): {e}")
     else:
         log("本轮无严格买入信号，仅推送技术达标观察池。")
-    log(f"耗时 {time.time()-t0:.0f}s")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--pool', type=int, default=POOL_SIZE)
+    ap.add_argument('--workers', type=int, default=12)
+    ap.add_argument('--force', action='store_true', help='强制扫描(忽略交易时段/复用缓存)')
+    ap.add_argument('--no-market-filter', action='store_true')
+    ap.add_argument('--market-filter', action='store_true',
+                    help='强制启用上证>MA20 择时 (v8 默认已关闭)')
+    ap.add_argument('--top', type=int, default=5, help='提示: 每日建议买入前 N 只')
+    ap.add_argument('--allow-push-offhours', action='store_true',
+                    help='允许非交易时段也推送微信(默认非交易时段静默, 防盘后延迟运行误推)')
+    args = ap.parse_args()
+
+    slots = _today_slots()
+    now = now_cst()
+    # 找到第一个仍在本日窗口内的档位(档位后35min内视为仍需处理, 等BAR走完)
+    start_idx = None
+    for i, s in enumerate(slots):
+        if now <= s + timedelta(minutes=35):
+            start_idx = i
+            break
+    if start_idx is None:
+        log("今日所有档位已结束 (now=%s), 退出。" % now.strftime('%H:%M'))
+        return
+    log("== 盘中实时盯盘 v8 自链路启动 (覆盖 %s~%s, 共 %d 档) ==" % (
+        slots[start_idx].strftime('%H:%M'), slots[-1].strftime('%H:%M'),
+        len(slots) - start_idx))
+    for s in slots[start_idx:]:
+        try:
+            # 等到档位
+            cur = now_cst()
+            if cur < s:
+                wait = int((s - cur).total_seconds())
+                log("距档位 %s 还有 %ds, 睡眠等待" % (s.strftime('%H:%M'), wait))
+                time.sleep(min(wait, 5400))          # 上限90min(午休档距), 防异常长睡
+            # 到档位后再等5min让15min BAR走完
+            cur = now_cst()
+            _base = (cur.minute // 30) * 30           # 0 或 30
+            _target = cur.replace(minute=_base, second=0, microsecond=0) + timedelta(minutes=5)
+            if cur < _target:
+                time.sleep(int((_target - cur).total_seconds()))
+            _run_one_slot(args)
+            log("档位 %s 完成" % s.strftime('%H:%M'))
+        except Exception as e:
+            log("档位 %s 执行异常(跳过, 继续下一档): %s" % (s.strftime('%H:%M'), e))
+    log("== 全天盯盘结束 ==")
 
 
 if __name__ == '__main__':
