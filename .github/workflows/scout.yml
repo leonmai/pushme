@@ -20,7 +20,8 @@ concurrency:
 jobs:
   scout:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 自链路: 一次点火跑完全天 9 档 (09:35~14:35), 最长约 5.5h, 留足余量
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,25 +39,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -c "
-          import os, json, base64, urllib.request, sys
-          token = os.environ['GH_TOKEN']; repo = os.environ['GITHUB_REPOSITORY']
-          H = {'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'User-Agent': 'x'}
-          ok = True
-          for f in ['live_scout.py', 'screener_v2.py']:
-              req = urllib.request.Request('https://api.github.com/repos/%s/contents/%s' % (repo, f), headers=H)
-              d = json.loads(urllib.request.urlopen(req, timeout=30).read())
-              open(f, 'wb').write(base64.b64decode(d['content']))
-              print('downloaded', f, 'sha', d.get('sha', '')[:10], 'bytes', len(d['content']))
-          src = open('live_scout.py', encoding='utf-8').read()
-          sv = open('screener_v2.py', encoding='utf-8').read()
-          if 'iloc[max(0, i - 3):i].mean()' not in src:
-              print('FATAL: live_scout.py 修复串缺失 (仍是旧 cv/pv 逻辑)'); ok = False
-          if 'VOL_MULT = 2.0' not in sv:
-              print('FATAL: screener_v2.py VOL_MULT 缺失'); ok = False
-          print('FIX VERIFIED' if ok else 'FIX MISSING -> abort')
-          sys.exit(0 if ok else 1)
-          "
+          # 偶发网络抖动(GitHub Contents API 偶发 404)时重试, 避免单点失败整轮崩掉
+          for i in 1 2 3; do
+            python3 -c "
+            import os, json, base64, urllib.request, sys
+            token = os.environ['GH_TOKEN']; repo = os.environ['GITHUB_REPOSITORY']
+            H = {'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'User-Agent': 'x'}
+            ok = True
+            for f in ['live_scout.py', 'screener_v2.py']:
+                req = urllib.request.Request('https://api.github.com/repos/%s/contents/%s' % (repo, f), headers=H)
+                d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+                open(f, 'wb').write(base64.b64decode(d['content']))
+                print('downloaded', f, 'sha', d.get('sha', '')[:10], 'bytes', len(d['content']))
+            src = open('live_scout.py', encoding='utf-8').read()
+            sv = open('screener_v2.py', encoding='utf-8').read()
+            if 'iloc[max(0, i - 3):i].mean()' not in src:
+                print('FATAL: live_scout.py 修复串缺失 (仍是旧 cv/pv 逻辑)'); ok = False
+            if 'VOL_MULT = 2.0' not in sv:
+                print('FATAL: screener_v2.py VOL_MULT 缺失'); ok = False
+            print('FIX VERIFIED' if ok else 'FIX MISSING -> abort')
+            sys.exit(0 if ok else 1)
+            "
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              echo "源码刷新+校验成功 (第 $i 次)"
+              break
+            fi
+            echo "第 $i 次下载/校验失败(code=$rc), 5s 后重试"
+            sleep 5
+          done
+          if [ $rc -ne 0 ]; then
+            echo "3 次均失败, 终止"
+            exit 1
+          fi
 
       - name: 安装依赖 (云端仅必需项, 装得快)
         run: pip install -r requirements.txt
