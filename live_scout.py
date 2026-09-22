@@ -90,6 +90,8 @@ SAME_VOL_STRONG = 2.3       # ★★★ 强信号 (对应回测全天 1.47, PF ~
 CHASE_LIMIT_PCT = 3.0       # 追高上限: 现价较信号价涨超 3% 提示慎追
 DAY_GAIN_MAX = 3.0        # 当日涨幅过滤: 扫描时剔除当日涨幅 > 此值的个股 (已大幅拉升, 不宜追高)
 EXCLUDE_STAR_MARKET = True    # 科创板(688xxx)剔除: 用户要求计划任务不含科创板; 手动跑加 --allow-star 放开
+MAX_MKT_CAP_WAN = 2_000_000.0  # 市值上限: 总市值 > 200亿(=2,000,000 万元) 剔除 (用户 2026-09-22 要求, 中小盘为主)
+EXCLUDE_YIN_BAR = True         # 阴线过滤: 放量那根 15min bar 为阴线(收<开)的候选剔除 (用户 2026-09-22 要求)
 
 # A股 15min bar 的 close-time 标记 (与 screener_v2 一致, 已排除的三根不列入)
 BAR_TIMES = [(9, 45), (10, 0), (10, 15), (10, 30), (10, 45), (11, 0), (11, 15),
@@ -220,7 +222,8 @@ def fetch_snapshot(n: int) -> pd.DataFrame:
         raise RuntimeError('全市场快照获取失败')
     df = pd.DataFrame(rows).rename(columns={
         'code': 'code', 'name': 'name', 'trade': 'price',
-        'changepercent': 'pct', 'amount': 'turnover', 'volume': 'volume'})
+        'changepercent': 'pct', 'amount': 'turnover', 'volume': 'volume',
+        'mktcap': 'mktcap', 'nmc': 'nmc'})
     df['code'] = df['symbol'].apply(lambda s: s[2:] if str(s).startswith(('sh', 'sz', 'bj')) else str(s))
     for c in ('price', 'pct', 'turnover', 'volume'):
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -414,7 +417,8 @@ def find_all_signal_bars(df15: pd.DataFrame, target_day: date) -> list[dict]:
 
 def best_candidate_bar(df15: pd.DataFrame, target_day: date) -> dict | None:
     """观察池代表 bar: 取当日 vol_ratio 最高的那根(最接近触发信号的技术状态)。
-    即便未触发严格信号, 也给出最接近信号的技术指标, 供观察池(watchlist)展示。"""
+    即便未触发严格信号, 也给出最接近信号的技术指标, 供观察池(watchlist)展示。
+    2026-09-22: 若量比最高的放量节点是阴线(收<开), 整只候选剔除 (EXCLUDE_YIN_BAR)。"""
     prep = _prepare_days(df15, target_day)
     if prep is None:
         return None
@@ -426,6 +430,9 @@ def best_candidate_bar(df15: pd.DataFrame, target_day: date) -> dict | None:
             continue
         if best is None or m['vol_ratio'] > best['vol_ratio']:
             best = m
+    if best is not None and EXCLUDE_YIN_BAR and best.get('change_pct', 0) < 0:
+        # 放量节点落在阴线上: 缩量回调后放量应发生在阳线, 阴线放量多为派发, 剔除
+        return None
     return best
 
 
@@ -637,8 +644,13 @@ def scan(args):
                 (snap['pct'] >= -6)]
     n_over_gain = int((snap['pct'] > DAY_GAIN_MAX).sum())
     snap = snap[snap['pct'] <= DAY_GAIN_MAX]
+    # 市值过滤: 总市值 > 200亿(=2,000,000万元) 剔除, 只看中小盘 (用户 2026-09-22 要求)
+    snap['mktcap'] = pd.to_numeric(snap.get('mktcap'), errors='coerce')
+    n_over_cap = int(((snap['mktcap'] > MAX_MKT_CAP_WAN) | (snap['mktcap'] <= 0)).sum())
+    snap = snap[(snap['mktcap'] > 0) & (snap['mktcap'] <= MAX_MKT_CAP_WAN)]
     snap = snap.sort_values('turnover', ascending=False).head(args.pool).reset_index(drop=True)
-    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/科创板/极端涨跌/当日涨幅>{DAY_GAIN_MAX}% 的 {n_over_gain} 只)")
+    log(f"候选池: {len(snap)} 只 (成交额前 {args.pool}, 已剔除 ST/北交/科创板/极端涨跌"
+        f"/当日涨幅>{DAY_GAIN_MAX}% 的 {n_over_gain} 只/市值>200亿或缺失的 {n_over_cap} 只)")
     if n_star:
         log(f"  其中科创板(688xxx)剔除 {n_star} 只")
 
